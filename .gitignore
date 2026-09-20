@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+freshservice.json
+tests_sanity.py
+.DS_Store

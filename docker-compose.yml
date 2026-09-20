@@ -1,0 +1,36 @@
+# FreshService MCP server — Docker Compose (network daemon mode).
+#
+# This composes the server as a long-running HTTP/SSE daemon so an MCP client
+# can reach it over the network. For the embedded/stdio pattern (single MCP
+# client such as Claude Desktop spawning the container), see the README
+# "Run via Docker (stdio)" section instead.
+
+services:
+  freshservice-mcp:
+    build: .
+    image: freshservice-mcp:latest
+    container_name: freshservice-mcp
+    restart: unless-stopped
+    # Run as a streamable-http daemon (default). Swap to "sse" if preferred.
+    command: ["--transport", "http", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      FRESHSERVICE_CONFIG_FILE: /config/freshservice.json
+      # Set FRESHSERVICE_VERIFY_SSL=false only if you proxy FreshService through
+      # a self-signed/test certificate that the container does not trust.
+      # FRESHSERVICE_VERIFY_SSL: "false"
+      # Require this API key on the MCP endpoints (see /health for the
+      # credential-free health check). Generate with: `openssl rand -hex 32`.
+      FRESHSERVICE_MCP_AUTH_TOKEN: ${FRESHSERVICE_MCP_AUTH_TOKEN:?set this to a strong random value}
+    volumes:
+      # Mount a config file written by `config init` (0600). The container runs
+      # as a non-root user; prefer env vars or chown the file to the container
+      # UID if you hit permission denied.
+      - ./freshservice.json:/config/freshservice.json:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=6).close()"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 20s
