@@ -75,10 +75,13 @@ echoing) and writes the file with `0600` owner-only permissions. Example result:
 }
 ```
 
-> Let the account's **admin > Settings > API key** provide the key. The server
-> authenticates to FreshService by sending the API key as
-> `Authorization: Bearer <api_key>` (FreshService accepts the API key as a bearer
-> token).
+> Let the account's **admin > Settings > API key** provide the key. This client
+> sends it as the HTTP **Basic** auth *username* (`curl -u <api_key>:X`, i.e.
+> `Authorization: Basic base64("<api_key>:")`), which is the form this tenant
+> accepts (HTTP 200). Note: some docs show a literal `api_key` *username* with
+> the real key as the password (`-u api_key:<key>`); that form returns 403
+> `access_denied` on this account, which is the exact 403 this project hit
+> before the fix.
 
 ## Run (stdio / embedded client)
 
@@ -233,8 +236,10 @@ freshservice-mcp/
 ## Notes on the FreshService API handled here
 
 - Base URL is `https://<domain>.freshservice.com/api/v2`.
-- Auth is a single API key sent as `Authorization: Bearer <api_key>`; the key is
-  never logged.
+- Auth is a single API key sent as HTTP Basic auth **with the key as the
+  username** (`curl -u <api_key>:X`); the password field is ignored/empty. The
+  key is never logged. HTTP 429 (rate limit) responses trigger a short
+  backoff retry honoring `Retry-After`.
 - List endpoints use `page` / `per_page` and return an envelope
   (`{"tickets": [...]}`), unwrapped automatically.
 - Filtering uses the filter query endpoint; the MCP exposes it directly via

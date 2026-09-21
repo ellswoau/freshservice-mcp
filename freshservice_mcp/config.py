@@ -39,7 +39,8 @@ class FreshServiceConfig:
     domain: str = ""
     # Optional full base URL override (wins over ``domain`` when both set).
     base_url: str = ""
-    # FreshService API key (sent as Authorization: Bearer <api_key>).
+    # FreshService API key (sent as the HTTP Basic auth username, i.e.
+    # `curl -u <api_key>:X`; the password field is ignored).
     api_key: str = ""
     verify_ssl: bool = True
     # Connection / request timeout in seconds.

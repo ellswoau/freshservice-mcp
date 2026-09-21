@@ -1,8 +1,11 @@
 """Thin REST client for the FreshService (Service Desk) v2 API.
 
-Authentication uses a FreshService API key sent as an ``Authorization: Bearer
-<api_key>`` header (FreshService accepts the API key as a bearer token). The
-key itself is never logged.
+Authentication uses a FreshService API key via HTTP Basic auth. This client
+sends the API key as the Basic-auth *username* (``curl -u <api_key>:<pass>``),
+which is the form this account accepts and returns HTTP 200 against; the
+password field is ignored by FreshService. (Some documentation shows a literal
+``api_key`` username with the real key as the password, but that form returns
+403 ``access_denied`` on the target tenant.) The key itself is never logged.
 
 API conventions (FreshService v2):
   * Base path is ``/api/v2`` against ``https://<domain>.freshservice.com``.
@@ -17,9 +20,11 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
+from requests.auth import HTTPBasicAuth
 
 from .config import FreshServiceConfig
 
@@ -50,12 +55,11 @@ class FreshServiceClient:
         self.verify_ssl = config.verify_ssl
         self.timeout = config.timeout
         self._session = requests.Session()
-        self._session.headers.update(
-            {
-                "Authorization": f"Bearer {config.api_key}",
-                "Content-Type": "application/json",
-            }
-        )
+        self._session.headers.update({"Content-Type": "application/json"})
+        # FreshService authenticates with Basic auth; send the API key as the
+        # username (matches the working `curl -u <api_key>:X` form). The password
+        # field is ignored, so it is left empty.
+        self._session.auth = HTTPBasicAuth(config.api_key, "")
 
     # ------------------------------------------------------------ request core
     @staticmethod
@@ -74,6 +78,10 @@ class FreshServiceClient:
             )
             raise FreshServiceError(resp.status_code, msg, detail)
 
+    MAX_RETRIES = 3
+    RATE_LIMIT_MIN_BACKOFF = 1.0
+    RATE_LIMIT_MAX_BACKOFF = 20.0
+
     def _request(
         self,
         method: str,
@@ -83,14 +91,38 @@ class FreshServiceClient:
         json_body: Any = None,
     ) -> requests.Response:
         url = f"{self.base_url}{self.API_PREFIX}{path}"
-        resp = self._session.request(
-            method,
-            url,
-            params=params,
-            json=json_body,
-            timeout=self.timeout,
-            verify=self.verify_ssl,
-        )
+        resp = None
+        attempt = 0
+        while True:
+            attempt += 1
+            resp = self._session.request(
+                method,
+                url,
+                params=params,
+                json=json_body,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+            )
+            if resp.status_code != 429:
+                break
+            # Rate limited: back off and retry (Retry-After honored when present).
+            if attempt >= self.MAX_RETRIES:
+                break
+            wait = self.RATE_LIMIT_MIN_BACKOFF * (2 ** (attempt - 1))
+            if "Retry-After" in resp.headers:
+                try:
+                    wait = max(wait, float(resp.headers["Retry-After"]))
+                except ValueError:
+                    pass
+            wait = min(wait, self.RATE_LIMIT_MAX_BACKOFF)
+            time.sleep(wait)
+
+        if resp.status_code == 429:
+            raise FreshServiceError(
+                429,
+                f"FreshService rate limit exceeded for {url} (retried {self.MAX_RETRIES} times). "
+                "Wait a minute and try again, or raise the account API rate limit.",
+            )
         self._raise_for(resp, url)
         return resp
 
