@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import base64
 import re
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional
 
 from mcp.types import ImageContent, TextContent
 
@@ -15,11 +15,12 @@ if TYPE_CHECKING:
     from ..config import FreshServiceConfig
 
 from ..client import get_client
-from ._common import extract_inline_attachments, summarize_conversation, normalize_email
-
-# Accept bare ids (47208) or display-form ids (INC-47208): the helper parses a
-# number out of either, so the schema must not force a strict int.
-TicketId = Union[int, str]
+from ._common import (
+    TicketId,
+    extract_inline_attachments,
+    summarize_conversation,
+    normalize_email,
+)
 
 
 # Guardrails so a single call cannot pull unbounded bytes / images into context.
@@ -110,7 +111,7 @@ def _collect_attachments(client, tid: int, conversation_id: Optional[int] = None
 
 def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     @mcp.tool()
-    def reply_to_requestor(ticket_id: int, body: str,
+    def reply_to_requestor(ticket_id: TicketId, body: str,
                            to_emails: Optional[List[str]] = None) -> dict:
         """Send an outgoing reply to the ticket requester (and any extra
         recipients via to_emails, e.g. to keep someone else in the loop). The
@@ -134,7 +135,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         }
 
     @mcp.tool()
-    def add_private_note(ticket_id: int, body: str) -> dict:
+    def add_private_note(ticket_id: TicketId, body: str) -> dict:
         """Add a private internal note to a ticket (not visible to the
         requester). Use for internal observations, troubleshooting notes, or to
         pass context to colleagues.
@@ -153,7 +154,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         }
 
     @mcp.tool()
-    def list_ticket_conversations(ticket_id: int) -> dict:
+    def list_ticket_conversations(ticket_id: TicketId) -> dict:
         """List the full conversation history on a ticket (replies, notes, emails)
         newest first, marking each as public or private."""
         client = get_client(config)
@@ -312,7 +313,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         return out
 
     @mcp.tool()
-    def cc_email_on_ticket(ticket_id: int, emails: List[str]) -> dict:
+    def cc_email_on_ticket(ticket_id: TicketId, emails: List[str]) -> dict:
         """CC additional email addresses on a ticket (e.g. the requester's
         manager) so they receive updates via email. Emails are added to both the
         forward-Cc and reply-Cc lists."""
@@ -335,7 +336,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         }
 
     @mcp.tool()
-    def notify_emails(ticket_id: int, emails: List[str], body: Optional[str] = None) -> dict:
+    def notify_emails(ticket_id: TicketId, emails: List[str], body: Optional[str] = None) -> dict:
         """Notify additional people (IT team members / manager / escalation
         contacts) by adding their emails to the ticket's CC list so they get
         email updates, optionally with a private note for the team.

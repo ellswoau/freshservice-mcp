@@ -14,7 +14,14 @@ if TYPE_CHECKING:
     from ..config import FreshServiceConfig
 
 from ..client import FreshServiceClient, get_client
-from ._common import current_agent_id, find_requesters, summarize_conversation, summarize_ticket, today_start_iso
+from ._common import (
+    TicketId,
+    current_agent_id,
+    find_requesters,
+    summarize_conversation,
+    summarize_ticket,
+    today_start_iso,
+)
 
 
 def _require_ticket_id(ticket_id) -> int:
@@ -142,7 +149,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         }
 
     @mcp.tool()
-    def view_ticket(ticket_id: int, include_conversations: bool = False) -> dict:
+    def view_ticket(ticket_id: TicketId, include_conversations: bool = False) -> dict:
         """View a single ticket by id. Set include_conversations=True to also
         return the ticket's replies & private notes (inline via the
         ``conversations`` include, valid on this account). Returns full ticket
@@ -238,7 +245,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         return {"created": True, "ticket": summarize_ticket(created.get("ticket") or {})}
 
     @mcp.tool()
-    def update_ticket(ticket_id: int, updates: dict) -> dict:
+    def update_ticket(ticket_id: TicketId, updates: dict) -> dict:
         """Update any ticket attributes generically via an ``updates`` dict
         (e.g. {"subject": ..., "description": ..., "cc_emails": [...],
         "tags": [...], "due_by": ...}). Pass only the fields you want to
@@ -252,7 +259,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         return {"updated": True, "ticket": summarize_ticket(updated.get("ticket") or {})}
 
     @mcp.tool()
-    def set_ticket_status(ticket_id: int, status: str, resolution: Optional[str] = None) -> dict:
+    def set_ticket_status(ticket_id: TicketId, status: str, resolution: Optional[str] = None) -> dict:
         """Change a ticket's status. Accepts a name ('open', 'pending',
         'resolved', 'closed') or a numeric id (2/3/4/5). On accounts that accept
         a free-text resolution you may pass it via `resolution`; other accounts
@@ -275,7 +282,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         return {"ticket_id": tid, "status": status, "ticket": summarize_ticket(updated.get("ticket") or {})}
 
     @mcp.tool()
-    def set_ticket_priority(ticket_id: int, priority: str) -> dict:
+    def set_ticket_priority(ticket_id: TicketId, priority: str) -> dict:
         """Change a ticket's priority. Accepts a name ('low', 'medium', 'high',
         'urgent') or a numeric id (1/2/3/4). Returns the updated ticket."""
         client = get_client(config)
@@ -292,7 +299,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         return {"ticket_id": tid, "priority": priority, "ticket": summarize_ticket(updated.get("ticket") or {})}
 
     @mcp.tool()
-    def categorize_ticket(ticket_id: int, ticket_type: str,
+    def categorize_ticket(ticket_id: TicketId, ticket_type: str,
                           group_id: Optional[int] = None,
                           priority: Optional[str] = None) -> dict:
         """Categorize/classify a ticket by setting its type (account-defined;
@@ -312,7 +319,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         return {"ticket_id": tid, "categorized": True, "ticket": summarize_ticket(updated.get("ticket") or {})}
 
     @mcp.tool()
-    def assign_ticket(ticket_id: int, responder_id: Optional[int] = None,
+    def assign_ticket(ticket_id: TicketId, responder_id: Optional[int] = None,
                       group_id: Optional[int] = None) -> dict:
         """Assign a ticket to an agent (responder_id from) and/or an agent group
         (group_id from list_groups). Pass at least one. Use for routing work to
@@ -330,7 +337,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         return {"ticket_id": tid, "assigned": True, "ticket": summarize_ticket(updated.get("ticket") or {})}
 
     @mcp.tool()
-    def add_time_entry(ticket_id: int, time_spent: str, note: Optional[str] = None,
+    def add_time_entry(ticket_id: TicketId, time_spent: str, note: Optional[str] = None,
                        billable: bool = True, agent_id: Optional[int] = None) -> dict:
         """Log billable/non-billable time worked on a ticket. time_spent must be
         in 'hh:mm' form (e.g. '00:15', '01:30'). The authenticated agent is used

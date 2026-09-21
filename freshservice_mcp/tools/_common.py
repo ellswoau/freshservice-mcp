@@ -4,7 +4,7 @@ from __future__ import annotations
 import html as _html
 import re
 from datetime import date, datetime, time, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # FreshService fixed numeric values (from the API reference).
 STATUSES = {2: "Open", 3: "Pending", 4: "Resolved", 5: "Closed"}
@@ -51,6 +51,11 @@ def summarize_ticket(t: Dict[str, Any]) -> Dict[str, Any]:
         "cc_emails": t.get("cc_emails"),
         "description_text": t.get("description_text"),
     }
+
+
+# Ticket ids may be given bare (47208) or in display form ('INC-47208');
+# ``_require_ticket_id`` parses either, so tool schemas must accept both.
+TicketId = Union[int, str]
 
 
 _IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
