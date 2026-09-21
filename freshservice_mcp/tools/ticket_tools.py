@@ -18,7 +18,11 @@ from ._common import current_agent_id, find_requesters, summarize_ticket, today_
 
 
 def _require_ticket_id(ticket_id) -> int:
-    tid = int(str(ticket_id).strip())
+    # Accept bare ids ('47199') or display-form ids ('INC-47199', 'SR-39').
+    m = re.search(r"\d+", str(ticket_id).strip())
+    if not m:
+        raise ValueError("ticket_id must be a positive integer, e.g. 47199 or INC-47199.")
+    tid = int(m.group(0))
     if tid <= 0:
         raise ValueError("ticket_id must be a positive integer.")
     return tid
