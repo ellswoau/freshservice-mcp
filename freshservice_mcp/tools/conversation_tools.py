@@ -27,6 +27,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         """Send an outgoing reply to the ticket requester (and any extra
         recipients via to_emails, e.g. to keep someone else in the loop). The
         reply becomes a public, requester-visible conversation entry."""
+        # Note: conversation-write endpoints may be unavailable on some plans.
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         if not body or not body.strip():
@@ -47,6 +48,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         """Add a private internal note to a ticket (not visible to the
         requester). Use for internal observations, troubleshooting notes, or to
         pass context to colleagues."""
+        # Note: conversation-write endpoints may be unavailable on some plans.
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         if not body or not body.strip():
@@ -64,7 +66,8 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         newest first, marking each as public or private."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
-        convs = client.get_json(f"/tickets/{tid}/conversations")
+        data = client.get_json(f"/tickets/{tid}/conversations")
+        convs = data.get("conversations") if isinstance(data, dict) else data
         if not isinstance(convs, list):
             convs = []
         return {
@@ -80,43 +83,52 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         forward-Cc and reply-Cc lists."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
-        # Read the current ticket to append to existing cc lists.
+        # Read the current ticket to append to the existing cc list.
         ticket = client.get_one(f"/tickets/{tid}", key="ticket")
-        existing_cc = ticket.get("cc_emails") or []
-        existing_reply_cc = ticket.get("reply_cc_emails") or []
-        new_cc = list(existing_cc) + [e for e in emails if e not in existing_cc]
-        new_reply_cc = list(existing_reply_cc) + [e for e in emails if e not in existing_reply_cc]
-        updated = client.put_json(
-            f"/tickets/{tid}",
-            {"cc_emails": new_cc, "reply_cc_emails": new_reply_cc},
-        )
+        existing_cc = (ticket.get("cc_emails") or [])
+        new_cc = []
+        for e in emails:
+            if e not in existing_cc:
+                existing_cc.append(e)
+                new_cc.append(e)
+        updated = client.put_json(f"/tickets/{tid}", {"cc_emails": existing_cc})
         return {
             "ticket_id": tid,
             "cc_added": emails,
-            "all_cc_emails": new_cc,
+            "all_cc_emails": existing_cc,
             "ticket": updated.get("ticket") or {},
         }
 
     @mcp.tool()
     def notify_emails(ticket_id: int, emails: List[str], body: Optional[str] = None) -> dict:
         """Notify additional people (IT team members / manager / escalation
-        contacts) about a ticket by email. Unlike CC (which stays on the ticket)
-        this fires a notification email to the given addresses now. Optionally
-        include a body message and, optionally, add a private note via
-        add_private_note."""
+        contacts) by adding their emails to the ticket's CC list so they get
+        email updates, optionally with a private note for the team.
+
+        (FreshService has no dedicated 'notify once' endpoint; adding to
+        cc_emails is the supported way to loop people into a ticket.)"""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         if not emails:
             raise ValueError("Provide at least one email to notify.")
-        payload: dict = {"emails": list(emails), "cc": True}
-        result = client.post_json(f"/tickets/{tid}/notify", payload)
+        ticket = client.get_one(f"/tickets/{tid}", key="ticket")
+        existing_cc = (ticket.get("cc_emails") or [])
+        new_cc = list(existing_cc)
+        for e in emails:
+            if e not in new_cc:
+                new_cc.append(e)
+        updated = client.put_json(f"/tickets/{tid}", {"cc_emails": new_cc})
         noted = False
         if body and body.strip():
-            client.post_json(f"/tickets/{tid}/conversations/note", {"body": body})
-            noted = True
+            try:
+                client.post_json(f"/tickets/{tid}/conversations/note", {"body": body})
+                noted = True
+            except Exception:
+                noted = False
         return {
             "ticket_id": tid,
-            "notified_emails": list(emails),
+            "notified_emails": [e for e in emails if e not in existing_cc],
+            "all_cc_emails": new_cc,
             "note_added": noted,
-            "result": result,
+            "ticket": updated.get("ticket") or {},
         }

@@ -175,31 +175,43 @@ class FreshServiceClient:
         *,
         params: Optional[Dict[str, Any]] = None,
         per_page: int = DEFAULT_PAGE_SIZE,
-        max_items: int = 1000,
+        page: int = 1,
         envelope_key: str = "tickets",
+        max_pages: Optional[int] = None,
     ) -> List[Any]:
-        """Fetch pages of a paginated list endpoint until exhausted or a cap.
+        """Fetch items from a paginated list endpoint.
 
         FreshService list endpoints return ``{"<envelope_key>": [...], "meta":
-        {...}}`` and accept ``page`` + ``per_page``. ``max_items`` guards
-        against unbounded pulls.
+        {...}}`` and accept ``page`` + ``per_page``.
+
+        By default this returns a *single* page (the requested ``page``). Pass
+        ``max_pages`` > 1 to walk forward through subsequent pages. Auto-walking
+        from page 1 is deliberately NOT done because FreshService rate-limits
+        aggressively (HTTP 429) and cascading pages for a small per_page would
+        burn the whole request budget on a handful of results.
         """
         per_page = max(1, min(int(per_page), self.MAX_PAGE_SIZE))
         collected: List[Any] = []
-        page = 1
+        cur = max(1, int(page))
         p = dict(params or {})
         while True:
             p["per_page"] = per_page
-            p["page"] = page
+            p["page"] = cur
             batch = self.get_json(path, params=p)
             items = self._unwrap(batch, envelope_key)
             if not items:
                 break
             collected.extend(items)
-            if len(items) < per_page or len(collected) >= max_items:
+            # Default: single page. Otherwise stop once the requested window is
+            # exhausted or the server returns a short page.
+            if max_pages is None:
                 break
-            page += 1
-        return collected[:max_items]
+            if cur >= (int(page) + max_pages - 1):
+                break
+            if len(items) < per_page:
+                break
+            cur += 1
+        return collected
 
     def get_one(self, path: str, *, params: Optional[Dict[str, Any]] = None, key: str) -> Dict[str, Any]:
         """Fetch a single resource envelope (``{key: {...}}``)."""

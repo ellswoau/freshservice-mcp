@@ -235,15 +235,41 @@ freshservice-mcp/
 
 ## Notes on the FreshService API handled here
 
+Operational details verified against the live Weller Truck Parts tenant:
+
 - Base URL is `https://<domain>.freshservice.com/api/v2`.
 - Auth is a single API key sent as HTTP Basic auth **with the key as the
   username** (`curl -u <api_key>:X`); the password field is ignored/empty. The
   key is never logged. HTTP 429 (rate limit) responses trigger a short
   backoff retry honoring `Retry-After`.
 - List endpoints use `page` / `per_page` and return an envelope
-  (`{"tickets": [...]}`), unwrapped automatically.
-- Filtering uses the filter query endpoint; the MCP exposes it directly via
-  `filter_tickets` and wraps common cases (by status, by day, by user).
+  (`{"tickets": [...]}`, `{"conversations": [...]}`, `{"requesters": [...]}`,
+  `{"agents": [...]}`), unwrapped automatically. `get_list` returns a **single
+  page** by default; it does not auto-cascade pages (which would blow straight
+  through the API rate limit).
+- **Filter queries must be wrapped in double quotes** (`query="status:2"`),
+  and `created_at` comparisons use date-only values (`YYYY-MM-DD`). This is
+  exactly how `filter_tickets`, `list_tickets_by_status`,
+  `list_tickets_opened_today` and `view_tickets_by_user` are implemented.
+- Requester/contact directory is **`/api/v2/requesters`**, not `/contacts`
+  (which returns 404 on this tenant). Email/name lookup scans a bounded number
+  of requester pages client-side because the requester filter query does not
+  support email.
+- **Conversations (`/api/v2/tickets/{id}/conversations`) are read-only on this
+  plan**: `POST` to the note/reply subresources returns 404/405. So
+  `list_ticket_conversations` and `view_ticket(include_conversations=True)`
+  work, but `add_private_note` / `reply_to_requestor` will raise a clear API
+  error on plans/accounts that don't allow conversation writes.
+- **Ticket `type` is account-defined**; common values are `Incident`,
+  `Service Request` or `Major Incident` (the API enforces valid values).
+  Custom status/priority ids beyond the standard 2/3/4/5 are possible on this
+  tenant.
+- `add_time_entry` requires `time_spent` in `hh:mm` (e.g. `00:15`; `45m` /
+  `1h30m` are accepted and normalised) and the authenticated agent id is used
+  automatically.
+- `cc_email_on_ticket` / `notify_emails` add to `cc_emails` (there is no
+  dedicated notify endpoint); `reply_cc_emails` is NOT writable via the ticket
+  update.
 - Mutating calls return the updated resource, which is summarised for the
   assistant instead of dumping raw JSON.
 - All requests honour `verify_ssl` (on by default; disable only for self-signed

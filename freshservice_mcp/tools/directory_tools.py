@@ -12,18 +12,7 @@ if TYPE_CHECKING:
     from ..config import FreshServiceConfig
 
 from ..client import get_client
-
-
-def _contact_summary(c) -> dict:
-    return {
-        "id": c.get("id"),
-        "name": c.get("name"),
-        "email": c.get("email"),
-        "phone": c.get("phone"),
-        "active": c.get("active"),
-        "job_title": c.get("job_title"),
-        "department": (c.get("department") or {}).get("name") if isinstance(c.get("department"), dict) else c.get("department"),
-    }
+from ._common import find_requesters, summarize_requester
 
 
 def _agent_summary(a) -> dict:
@@ -43,35 +32,35 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     @mcp.tool()
     def search_contact(query: str = "", email: Optional[str] = None,
                        per_page: int = 20) -> dict:
-        """Search requester/contacts by name (query) or email. Use this to
-        resolve a requester's contact id before view_tickets_by_user or to
-        confirm who a ticket belongs to."""
+        """Search requesters/contacts by name (query) or email. Use this to
+        resolve a requester's id before view_tickets_by_user or to confirm who
+        a ticket belongs to. Matches against the /requesters directory."""
         client = get_client(config)
-        if email:
-            fq = f"email:{email.strip()}"
+        if email and email.strip():
+            matches = find_requesters(client, email=email)
         elif query and query.strip():
-            fq = f"name:{query.strip()}"
+            matches = find_requesters(client, name=query.strip())
         else:
-            fq = ""
-        contacts = client.get_list(
-            "/contacts",
-            params={"query": fq} if fq else None,
-            per_page=per_page,
-            envelope_key="contacts",
-        )
-        return {"returned": len(contacts), "contacts": [_contact_summary(c) for c in contacts]}
+            all_reqs = client.get_list(
+                "/requesters", per_page=per_page, envelope_key="requesters"
+            )
+            matches = [summarize_requester(r) for r in all_reqs]
+        return {"returned": len(matches), "requesters": matches[:per_page]}
 
     @mcp.tool()
-    def list_agents(active: bool = True, per_page: int = 100) -> dict:
+    def list_agents(active: Optional[bool] = None, per_page: int = 100) -> dict:
         """List FreshService agents (technicians). Useful for finding who to
-        assign/escalate a ticket to."""
+        assign/escalate a ticket to. If ``active`` is True/False the result is
+        filtered to that state after listing (the /agents API has no 'active'
+        state filter)."""
         client = get_client(config)
         agents = client.get_list(
             "/agents",
-            params={"state": "active"} if active else None,
             per_page=per_page,
             envelope_key="agents",
         )
+        if active is not None:
+            agents = [a for a in agents if bool(a.get("active")) == active]
         return {"returned": len(agents), "agents": [_agent_summary(a) for a in agents]}
 
     @mcp.tool()

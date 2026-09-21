@@ -70,11 +70,9 @@ def summarize_conversation(c: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def today_start_iso() -> str:
-    """Return ISO-8601 timestamp for the start of today (local) for filter
-    queries."""
-    d = date.today()
-    dt = datetime.combine(d, time.min)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+    """Return today's date as YYYY-MM-DD for filter queries (FreshService's
+    created_at comparison uses date-only values)."""
+    return date.today().isoformat()
 
 
 def normalize_email(emails) -> Optional[str]:
@@ -85,3 +83,62 @@ def normalize_email(emails) -> Optional[str]:
         emails = [emails]
     cleaned = [e.strip() for e in emails if e and e.strip()]
     return ",".join(cleaned) if cleaned else None
+
+
+def current_agent_id(client) -> Optional[int]:
+    """Return the id of the agent the API key authenticates as (via
+    /agents/me), used for time entries, resolution responder, etc."""
+    data = client.get_json("/agents/me")
+    agent = data.get("agent") if isinstance(data, dict) else None
+    return (agent or {}).get("id")
+
+
+def summarize_requester(r: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a compact summary of a FreshService requester/contact."""
+    return {
+        "id": r.get("id"),
+        "name": r.get("name"),
+        "email": r.get("email") or r.get("primary_email"),
+        "active": r.get("active"),
+        "job_title": r.get("job_title"),
+        "department_id": r.get("department_id"),
+        "department_name": r.get("department_name") or (r.get("department") or {}).get("name") if isinstance(r.get("department"), dict) else r.get("department"),
+    }
+
+
+def find_requesters(client, email: Optional[str] = None, name: Optional[str] = None,
+                    *, max_pages: int = 6, per_page: int = 100) -> list:
+    """Locate FreshService requesters (contacts) by matching email or name.
+
+    The `/api/v2/requesters` list endpoint does not expose a reliable email or
+    name query filter, so we scan a bounded number of pages and match
+    client-side. ``max_pages`` caps how many pages we pull to stay well within
+    the API rate limit. Returns matching requester dicts (summarised).
+    """
+    needle_email = (email or "").strip().lower()
+    needle_name = (name or "").strip().lower()
+    matches = []
+    seen = set()
+    for page in range(1, max_pages + 1):
+        batch = client.get_list(
+            "/requesters",
+            per_page=per_page,
+            page=page,
+            envelope_key="requesters",
+        )
+        if not batch:
+            break
+        for r in batch:
+            rid = r.get("id")
+            if rid in seen:
+                continue
+            seen.add(rid)
+            r_email = (r.get("email") or r.get("primary_email") or "").lower()
+            r_name = (r.get("name") or "").lower()
+            if needle_email and needle_email in r_email:
+                matches.append(summarize_requester(r))
+            elif needle_name and needle_name in r_name:
+                matches.append(summarize_requester(r))
+        if len(batch) < per_page:
+            break
+    return matches

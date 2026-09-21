@@ -6,6 +6,7 @@ view a single ticket, create/update, change status/priority, categorize
 """
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
     from ..config import FreshServiceConfig
 
 from ..client import FreshServiceClient, get_client
-from ._common import summarize_ticket, today_start_iso
+from ._common import current_agent_id, find_requesters, summarize_ticket, today_start_iso
 
 
 def _require_ticket_id(ticket_id) -> int:
@@ -39,6 +40,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
                 "order_type": order_type,
             },
             per_page=per_page,
+            page=page,
             envelope_key="tickets",
         )
         return {
@@ -81,9 +83,10 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         Use `view_tickets_by_user` for a friendlier by-requester lookup.
         """
         client = get_client(config)
+        # FreshService requires filter queries to be wrapped in double quotes.
         tickets = client.get_list(
             "/tickets/filter",
-            params={"query": query},
+            params={"query": f'"{query}"'},
             per_page=per_page,
             envelope_key="tickets",
         )
@@ -107,7 +110,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         client = get_client(config)
         tickets = client.get_list(
             "/tickets/filter",
-            params={"query": f"status:{status_map[key]}"},
+            params={"query": f'"status:{status_map[key]}"'},
             per_page=per_page,
             envelope_key="tickets",
         )
@@ -124,7 +127,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         query = f"created_at:>'{today_start_iso()}'"
         tickets = client.get_list(
             "/tickets/filter",
-            params={"query": query},
+            params={"query": f'"{query}"'},
             per_page=per_page,
             envelope_key="tickets",
         )
@@ -146,10 +149,13 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         result = summarize_ticket(ticket)
         if include_conversations:
             try:
-                convs = client.get_json(f"/tickets/{tid}/conversations")
+                data = client.get_json(f"/tickets/{tid}/conversations")
+                convs = data.get("conversations") if isinstance(data, dict) else data
             except Exception:
                 convs = None
-            result["conversations"] = convs if isinstance(convs, list) else []
+            result["conversations"] = [
+                c for c in convs
+            ] if isinstance(convs, list) else []
         return result
 
     @mcp.tool()
@@ -163,30 +169,21 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         if requester_id is None:
             if not email or not email.strip():
                 raise ValueError("Provide either 'email' or 'requester_id'.")
-            # Resolve contact id from email.
-            contacts = client.get_list(
-                "/contacts",
-                params={"query": f"email:{email.strip()}"},
-                per_page=10,
-                envelope_key="contacts",
-            )
-            if not contacts:
-                return {"error": f"No contact found for email {email}.", "tickets": []}
-            requester_id = contacts[0].get("id")
+            # Resolve the requester id from email via the /requesters directory.
+            reqs = find_requesters(client, email=email.strip())
+            if not reqs:
+                return {"error": f"No requester found for email {email}.", "tickets": []}
+            requester_id = reqs[0]["id"]
+            if email is None:
+                email = reqs[0].get("email")
         else:
             requester_id = int(requester_id)
-            if email:
-                contacts = client.get_list(
-                    "/contacts",
-                    params={"query": f"id:{requester_id}"},
-                    per_page=10,
-                    envelope_key="contacts",
-                )
-                email = (contacts[0].get("email") if contacts else email)
+        if email is None:
+            email = None
 
         tickets = client.get_list(
             "/tickets/filter",
-            params={"query": f"requester_id:{requester_id}"},
+            params={"query": f'"requester_id:{requester_id}"'},
             per_page=per_page,
             envelope_key="tickets",
         )
@@ -206,6 +203,8 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         created) or requester_id. priority and status are FreshService numeric
         ids: status Open=2/Pending=3/Resolved=4/Closed=5; priority Low=1/
         Medium=2/High=3/Urgent=4. ticket_type e.g. Incident / Request / Change."""
+        # ``ticket_type`` values are account-defined; common ones are
+        # Incident / Service Request / Major Incident (the API enforces them).
         client = get_client(config)
         body: dict = {"subject": subject, "description": description,
                       "priority": priority, "status": status,
@@ -236,10 +235,12 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         return {"updated": True, "ticket": summarize_ticket(updated.get("ticket") or {})}
 
     @mcp.tool()
-    def set_ticket_status(ticket_id: int, status: str) -> dict:
+    def set_ticket_status(ticket_id: int, status: str, resolution: Optional[str] = None) -> dict:
         """Change a ticket's status. Accepts a name ('open', 'pending',
-        'resolved', 'closed') or a numeric id (2/3/4/5). Returns the updated
-        ticket."""
+        'resolved', 'closed') or a numeric id (2/3/4/5). On accounts that accept
+        a free-text resolution you may pass it via `resolution`; other accounts
+        use custom workflows, in which case only the status id is sent and the
+        API surfaces any additional requirements. Returns the updated ticket."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         status_map = {"open": 2, "pending": 3, "resolved": 4, "closed": 5}
@@ -250,7 +251,10 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
             if key not in status_map:
                 raise ValueError("status must be open, pending, resolved, or closed.")
             status_id = status_map[key]
-        updated = client.put_json(f"/tickets/{tid}", {"status": status_id})
+        body: dict = {"status": status_id}
+        if resolution and resolution.strip():
+            body["resolution"] = resolution.strip()
+        updated = client.put_json(f"/tickets/{tid}", body)
         return {"ticket_id": tid, "status": status, "ticket": summarize_ticket(updated.get("ticket") or {})}
 
     @mcp.tool()
@@ -274,9 +278,10 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     def categorize_ticket(ticket_id: int, ticket_type: str,
                           group_id: Optional[int] = None,
                           priority: Optional[str] = None) -> dict:
-        """Categorize/classify a ticket by setting its type (e.g. 'Incident',
-        'Request', 'Feature Request', 'Change'), optionally moving it to a
-        group and/or setting its priority. group_id comes from list_groups."""
+        """Categorize/classify a ticket by setting its type (account-defined;
+        commonly 'Incident', 'Service Request' or 'Major Incident'), optionally
+        moving it to a group and/or setting its priority. group_id comes from
+        list_groups."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         body: dict = {"type": ticket_type}
@@ -309,14 +314,28 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
 
     @mcp.tool()
     def add_time_entry(ticket_id: int, time_spent: str, note: Optional[str] = None,
-                       billable: bool = True) -> dict:
-        """Log billable/non-billable time worked on a ticket. time_spent is a
-        duration string like '1h 30m', '45m', or '2h'. Useful for tracking L1/L2
-        effort."""
+                       billable: bool = True, agent_id: Optional[int] = None) -> dict:
+        """Log billable/non-billable time worked on a ticket. time_spent must be
+        in 'hh:mm' form (e.g. '00:15', '01:30'). The authenticated agent is used
+        as the time-entry owner unless agent_id is given."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
-        body = {"time_spent": time_spent, "billable": billable}
+        ts = (time_spent or "").strip()
+        if not ts:
+            raise ValueError("time_spent is required in 'hh:mm' format (e.g. '00:15').")
+        # Convenience: accept '45m' / '1h30m' style and normalise to hh:mm.
+        if ":" not in ts:
+            m = re.match(r"^(?:(\d+)h)?\s*(?:(\d+)m)?$", ts, re.IGNORECASE)
+            if m:
+                h = int(m.group(1) or 0)
+                mm = int(m.group(2) or 0)
+                ts = f"{h:02d}:{mm:02d}"
+            else:
+                raise ValueError("time_spent must be 'hh:mm' (e.g. '00:15') or '45m'/'1h30m'.")
+        if agent_id is None:
+            agent_id = current_agent_id(client)
+        body = {"time_spent": ts, "billable": billable, "agent_id": agent_id}
         if note:
             body["note"] = note
         result = client.post_json(f"/tickets/{tid}/time_entries", body)
-        return {"ticket_id": tid, "logged": True, "result": result}
+        return {"ticket_id": tid, "logged": True, "time_spent": ts, "result": result}
