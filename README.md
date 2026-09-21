@@ -255,15 +255,19 @@ Operational details verified against the live Weller Truck Parts tenant:
   (which returns 404 on this tenant). Email/name lookup scans a bounded number
   of requester pages client-side because the requester filter query does not
   support email.
-- **Conversations (`/api/v2/tickets/{id}/conversations`) are read-only on this
-  plan**: `POST` to the note/reply subresources returns 404/405. So
-  `list_ticket_conversations` and `view_ticket(include_conversations=True)`
-  work, but `add_private_note` / `reply_to_requestor` will raise a clear API
-  error on plans/accounts that don't allow conversation writes.
+- **Conversations** — list history with `GET /api/v2/tickets/{id}/conversations`,
+  **reply to the requester** with `POST /api/v2/tickets/{id}/reply` (JSON body), and
+  **add a private note** with `POST /api/v2/tickets/{id}/notes` (multipart
+  `body` + `private=true`). These are separate endpoints, not
+  `/conversations/reply` / `/conversations/note` (which return 404).
+- `view_ticket(include_conversations=True)` uses `?include=requester,stats,conversations`
+  (only valid `include` values on this account; `responder`/`company` are rejected),
+  falling back to the conversations list endpoint if not returned inline.
 - **Ticket `type` is account-defined**; common values are `Incident`,
   `Service Request` or `Major Incident` (the API enforces valid values).
-  Custom status/priority ids beyond the standard 2/3/4/5 are possible on this
-  tenant.
+  Custom status/priority ids beyond the standard 2/3/4/5 are possible on this tenant;
+  `create_ticket` defaults to `status=Open (2)` and `priority=Low (1)` since the
+  API requires them on create.
 - `add_time_entry` requires `time_spent` in `hh:mm` (e.g. `00:15`; `45m` /
   `1h30m` are accepted and normalised) and the authenticated agent id is used
   automatically.

@@ -89,20 +89,36 @@ class FreshServiceClient:
         *,
         params: Optional[Dict[str, Any]] = None,
         json_body: Any = None,
+        form_data: Optional[Dict[str, Any]] = None,
     ) -> requests.Response:
         url = f"{self.base_url}{self.API_PREFIX}{path}"
         resp = None
         attempt = 0
         while True:
             attempt += 1
-            resp = self._session.request(
-                method,
-                url,
-                params=params,
-                json=json_body,
-                timeout=self.timeout,
-                verify=self.verify_ssl,
-            )
+            if form_data is not None:
+                # multipart/form-data (FreshService notes use `-F` form fields).
+                # ``files`` triggers multipart encoding with a boundary; drop the
+                # session's JSON Content-Type so requests can set it correctly.
+                files = {k: (None, v) for k, v in form_data.items()}
+                resp = self._session.request(
+                    method,
+                    url,
+                    params=params,
+                    files=files,
+                    headers={"Content-Type": None},
+                    timeout=self.timeout,
+                    verify=self.verify_ssl,
+                )
+            else:
+                resp = self._session.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    timeout=self.timeout,
+                    verify=self.verify_ssl,
+                )
             if resp.status_code != 429:
                 break
             # Rate limited: back off and retry (Retry-After honored when present).
@@ -146,6 +162,17 @@ class FreshServiceClient:
 
     def put_json(self, path: str, json_body: Any = None, *, params: Optional[Dict[str, Any]] = None) -> Any:
         resp = self._request("PUT", path, params=params, json_body=json_body)
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return resp.text
+
+    def post_form(self, path: str, data: Dict[str, Any], *, params: Optional[Dict[str, Any]] = None) -> Any:
+        """POST as multipart/form-data (FreshService's notes endpoint writes via
+        form fields, e.g. ``body`` + ``private``)."""
+        resp = self._request("POST", path, params=params, form_data=data)
         if not resp.content:
             return None
         try:

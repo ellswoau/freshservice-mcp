@@ -3,6 +3,7 @@ list conversation history, CC a manager, and notify/escalate to IT team members.
 """
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
@@ -14,7 +15,11 @@ from ._common import summarize_conversation, normalize_email
 
 
 def _require_ticket_id(ticket_id) -> int:
-    tid = int(str(ticket_id).strip())
+    # Accept bare ids ('47199') or display-form ids ('INC-47199', 'SR-39').
+    m = re.search(r"\d+", str(ticket_id).strip())
+    if not m:
+        raise ValueError("ticket_id must be a positive integer, e.g. 47199 or INC-47199.")
+    tid = int(m.group(0))
     if tid <= 0:
         raise ValueError("ticket_id must be a positive integer.")
     return tid
@@ -26,8 +31,9 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
                            to_emails: Optional[List[str]] = None) -> dict:
         """Send an outgoing reply to the ticket requester (and any extra
         recipients via to_emails, e.g. to keep someone else in the loop). The
-        reply becomes a public, requester-visible conversation entry."""
-        # Note: conversation-write endpoints may be unavailable on some plans.
+        reply becomes a public, requester-visible conversation entry.
+
+        Uses POST /api/v2/tickets/{id}/reply."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         if not body or not body.strip():
@@ -35,29 +41,32 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         payload: dict = {"body": body}
         if to_emails:
             payload["to_emails"] = list(to_emails)
-        result = client.post_json(f"/tickets/{tid}/conversations/reply", payload)
+        result = client.post_json(f"/tickets/{tid}/reply", payload)
         return {
             "ticket_id": tid,
             "sent": True,
             "to_emails": to_emails or [],
-            "conversation_id": (result or {}).get("conversation", {}).get("id"),
+            "conversation_id": (result or {}).get("conversation", {}).get("id")
+            or (result or {}).get("note", {}).get("id"),
         }
 
     @mcp.tool()
     def add_private_note(ticket_id: int, body: str) -> dict:
         """Add a private internal note to a ticket (not visible to the
         requester). Use for internal observations, troubleshooting notes, or to
-        pass context to colleagues."""
-        # Note: conversation-write endpoints may be unavailable on some plans.
+        pass context to colleagues.
+
+        Uses POST /api/v2/tickets/{id}/notes with private=true (multipart)."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         if not body or not body.strip():
             raise ValueError("body must not be empty.")
-        result = client.post_json(f"/tickets/{tid}/conversations/note", {"body": body})
+        result = client.post_form(f"/tickets/{tid}/notes", {"body": body, "private": "true"})
         return {
             "ticket_id": tid,
             "added": True,
-            "conversation_id": (result or {}).get("conversation", {}).get("id"),
+            "conversation_id": (result or {}).get("note", {}).get("id")
+            or (result or {}).get("conversation", {}).get("id"),
         }
 
     @mcp.tool()
@@ -121,7 +130,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         noted = False
         if body and body.strip():
             try:
-                client.post_json(f"/tickets/{tid}/conversations/note", {"body": body})
+                client.post_form(f"/tickets/{tid}/notes", {"body": body, "private": "true"})
                 noted = True
             except Exception:
                 noted = False

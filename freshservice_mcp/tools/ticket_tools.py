@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from ..config import FreshServiceConfig
 
 from ..client import FreshServiceClient, get_client
-from ._common import current_agent_id, find_requesters, summarize_ticket, today_start_iso
+from ._common import current_agent_id, find_requesters, summarize_conversation, summarize_ticket, today_start_iso
 
 
 def _require_ticket_id(ticket_id) -> int:
@@ -144,22 +144,31 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     @mcp.tool()
     def view_ticket(ticket_id: int, include_conversations: bool = False) -> dict:
         """View a single ticket by id. Set include_conversations=True to also
-        return the latest replies/notes. Returns full ticket attributes,
-        requester/responder/group details and timestamps."""
+        return the ticket's replies & private notes (inline via the
+        ``conversations`` include, valid on this account). Returns full ticket
+        attributes, requester/responder/group details and timestamps."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
-        params = {"include": "requester,responder,stats,company"} if include_conversations else None
-        ticket = client.get_one(f"/tickets/{tid}", params=params, key="ticket")
+        # Only valid `include` values for this account are used (e.g.
+        # ``requester,stats,conversations``); 'responder'/'company' are rejected.
+        base = "requester,stats"
+        if include_conversations:
+            base = f"{base},conversations"
+        ticket = client.get_one(f"/tickets/{tid}", params={"include": base}, key="ticket")
         result = summarize_ticket(ticket)
         if include_conversations:
-            try:
-                data = client.get_json(f"/tickets/{tid}/conversations")
-                convs = data.get("conversations") if isinstance(data, dict) else data
-            except Exception:
-                convs = None
-            result["conversations"] = [
-                c for c in convs
-            ] if isinstance(convs, list) else []
+            convs = ticket.get("conversations")
+            # Some accounts return them inline; otherwise fall back to the list
+            # endpoint (read-only, always available).
+            if not isinstance(convs, list):
+                try:
+                    data = client.get_json(f"/tickets/{tid}/conversations")
+                    convs = data.get("conversations") if isinstance(data, dict) else data
+                except Exception:
+                    convs = []
+            result["conversations"] = (
+                [summarize_conversation(c) for c in convs] if isinstance(convs, list) else []
+            )
         return result
 
     @mcp.tool()
@@ -206,12 +215,16 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         """Create a new ticket. Provide requester email (contact auto-resolved/
         created) or requester_id. priority and status are FreshService numeric
         ids: status Open=2/Pending=3/Resolved=4/Closed=5; priority Low=1/
-        Medium=2/High=3/Urgent=4. ticket_type e.g. Incident / Request / Change."""
+        Medium=2/High=3/Urgent=4. ticket_type e.g. Incident / Request / Change.
+        status defaults to Open (2) and priority to Low (1) if omitted."""
         # ``ticket_type`` values are account-defined; common ones are
         # Incident / Service Request / Major Incident (the API enforces them).
         client = get_client(config)
+        # FreshService enforces status & priority on create; default to Open/Low
+        # when the caller omits them.
         body: dict = {"subject": subject, "description": description,
-                      "priority": priority, "status": status,
+                      "priority": priority if priority is not None else 1,
+                      "status": status if status is not None else 2,
                       "type": ticket_type, "group_id": group_id}
         if requester_id is not None:
             body["requester_id"] = int(requester_id)
