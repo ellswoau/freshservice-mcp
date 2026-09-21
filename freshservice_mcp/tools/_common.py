@@ -1,9 +1,10 @@
 """Shared helpers for tool implementations."""
 from __future__ import annotations
 
+import html as _html
 import re
 from datetime import date, datetime, time, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # FreshService fixed numeric values (from the API reference).
 STATUSES = {2: "Open", 3: "Pending", 4: "Resolved", 5: "Closed"}
@@ -52,10 +53,87 @@ def summarize_ticket(t: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_SRC_RE = re.compile(r"\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+_DATA_ID_RE = re.compile(r"\bdata-id\s*=\s*[\"']?(\d+)", re.IGNORECASE)
+_ALT_RE = re.compile(r"\balt\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
+_WIDTH_RE = re.compile(r"\bwidth\s*=\s*[\"']?(\d+)", re.IGNORECASE)
+_HEIGHT_RE = re.compile(r"\bheight\s*=\s*[\"']?(\d+)", re.IGNORECASE)
+_INLINE_HOST = "attachment.freshservice.com"
+
+
+def extract_inline_attachments(body_html: Optional[str]) -> List[Dict[str, Any]]:
+    """Parse inline ``<img>`` attachments out of a conversation's HTML body.
+
+    FreshService renders requester screenshots as inline images whose ``src``
+    points at ``https://attachment.freshservice.com/inline/attachment?token=..``
+    (a pre-signed URL) and whose ``data-id`` is the FreshService attachment id.
+    These do *not* appear in the conversation's ``attachments`` array, so the
+    only way to surface them is to scan the HTML body.
+
+    Returns a list of dicts: ``{attachment_id, url, alt, width, height}``.
+    Email-signature logos are included too; callers can filter by size.
+    """
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for tag in _IMG_TAG_RE.findall(body_html or ""):
+        m = _SRC_RE.search(tag)
+        if not m:
+            continue
+        url = _html.unescape(m.group(1)).strip()
+        if not url or _INLINE_HOST not in url:
+            continue
+        did = _DATA_ID_RE.search(tag)
+        alt = _ALT_RE.search(tag)
+        width = _WIDTH_RE.search(tag)
+        height = _HEIGHT_RE.search(tag)
+        aid = int(did.group(1)) if did else None
+        key = aid if aid is not None else url
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "attachment_id": aid,
+            "url": url,
+            "alt": _html.unescape(alt.group(1)) if alt else None,
+            "width": int(width.group(1)) if width else None,
+            "height": int(height.group(1)) if height else None,
+        })
+    return out
+
+
 def summarize_conversation(c: Dict[str, Any]) -> Dict[str, Any]:
-    """Build a compact summary of a conversation (reply or note)."""
+    """Build a compact summary of a conversation (reply or note).
+
+    Includes inline-attachment metadata (screenshots pasted by the requester),
+    which live only in the HTML body -- see
+    :func:`extract_inline_attachments`.
+    """
     source = c.get("source") or {}
     from_email = c.get("from_email")
+    inline = extract_inline_attachments(c.get("body"))
+    filed = c.get("attachments") if isinstance(c.get("attachments"), list) else []
+    attachments = []
+    for a in filed:
+        if isinstance(a, dict):
+            attachments.append({
+                "attachment_id": a.get("id"),
+                "name": a.get("name"),
+                "content_type": a.get("content_type"),
+                "size": a.get("size"),
+                "url": a.get("attachment_url") or a.get("url"),
+            })
+    for a in inline:
+        attachments.append({
+            "attachment_id": a["attachment_id"],
+            "name": a.get("alt"),
+            "content_type": None,
+            "size": None,
+            "url": a["url"],
+            "inline": True,
+            "width": a.get("width"),
+            "height": a.get("height"),
+        })
     return {
         "id": c.get("id"),
         "ticket_id": c.get("ticket_id"),
@@ -66,6 +144,8 @@ def summarize_conversation(c: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": c.get("created_at"),
         "updated_at": c.get("updated_at"),
         "source": source.get("name") if isinstance(source, dict) else None,
+        "attachment_count": len(attachments),
+        "attachments": attachments,
     }
 
 

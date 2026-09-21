@@ -19,6 +19,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source.
 COPY freshservice_mcp ./freshservice_mcp
+# Normalise modes: a checkout created under a restrictive umask (e.g. 077)
+# yields 0600 files that the unprivileged runtime user cannot read.
+RUN chmod -R a+rX freshservice_mcp
 RUN python -m compileall -q freshservice_mcp
 
 USER freshservice

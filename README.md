@@ -25,7 +25,19 @@ Python [FastMCP](https://github.com/jlowin/fastmcp). It targets the FreshService
 - `add_private_note` — internal note (private conversation), not visible to requester
 - `cc_email_on_ticket` — CC a manager / extra recipients on the ticket
 - `notify_emails` — email-notify IT team members / escalation contacts now
-- `list_ticket_conversations` — full conversation history (public/private marked)
+- `list_ticket_conversations` — full conversation history (public/private marked);
+  each entry includes `attachment_count`/`attachments` metadata (inline
+  screenshots included)
+
+**Read attachments / screenshots**
+- `list_ticket_attachments` — list a ticket's attachments with metadata
+  (id, content type, size, pixel dimensions, sender). Surfaces images the
+  requester pasted *inline in the message body* — these do **not** appear in the
+  API's `attachments` array, so a text-only view of the conversation looks
+  "blank".
+- `view_attachments` — download image attachments and return them as real
+  images so a vision-capable model can read a screenshot. Small signature logos
+  are skipped by default.
 
 **Manage tickets**
 - `create_ticket` / `update_ticket`

@@ -19,8 +19,11 @@ See https://api.freshservice.com for the full reference.
 from __future__ import annotations
 
 import json
+import os
+import re
 import threading
 import time
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -168,6 +171,50 @@ class FreshServiceClient:
             return resp.json()
         except ValueError:
             return resp.text
+
+    # ------------------------------------------------------------ attachments
+    ATTACHMENT_HOSTS = ("attachment.freshservice.com",
+                        ".attachments.freshservice.com")
+
+    def download_binary(self, path_or_url: str, *, use_auth: bool = True) -> tuple:
+        """Download binary content (e.g. a ticket attachment/screenshot).
+
+        ``path_or_url`` may be a relative API path (``/attachments/123``) or a
+        full absolute URL (an inline-image ``attachment.freshservice.com/...``
+        link found in a conversation body).
+
+        Inline-image links are *pre-signed* URLs (a JWT of the form
+        ``.../inline/attachment?token=...`` that 302-redirects to a signed CDN
+        URL). Sending Basic-auth credentials to them is unnecessary and can
+        break the signature, so absolute URLs are fetched without auth.
+
+        Returns ``(content_bytes, content_type, filename)``.
+        """
+        is_absolute = path_or_url.startswith(("http://", "https://"))
+        if is_absolute:
+            url = path_or_url
+            get = requests.get if not use_auth else self._session.get
+            resp = get(url, timeout=self.timeout, verify=self.verify_ssl,
+                       allow_redirects=True)
+        else:
+            url = f"{self.base_url}{self.API_PREFIX}{path_or_url}"
+            resp = self._session.get(url, timeout=self.timeout,
+                                     verify=self.verify_ssl, allow_redirects=True)
+        self._raise_for(resp, url)
+        content_type = (resp.headers.get("Content-Type") or "application/octet-stream")
+        content_type = content_type.split(";")[0].strip()
+        filename = self._filename_from(resp, url)
+        return resp.content, content_type, filename
+
+    @staticmethod
+    def _filename_from(resp: requests.Response, url: str) -> str:
+        """Best-effort filename from Content-Disposition or the URL path."""
+        cd = resp.headers.get("Content-Disposition") or ""
+        m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', cd)
+        if m:
+            return m.group(1).strip()
+        path = urllib.parse.urlparse(url).path
+        return os.path.basename(path) or "attachment"
 
     def post_form(self, path: str, data: Dict[str, Any], *, params: Optional[Dict[str, Any]] = None) -> Any:
         """POST as multipart/form-data (FreshService's notes endpoint writes via
