@@ -4,5 +4,4 @@ __pycache__/
 *.pyo
 .env
 freshservice.json
-tests_sanity.py
 .DS_Store

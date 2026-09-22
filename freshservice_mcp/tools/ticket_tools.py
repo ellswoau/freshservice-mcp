@@ -18,10 +18,219 @@ from ._common import (
     TicketId,
     current_agent_id,
     find_requesters,
+    status_name,
     summarize_conversation,
     summarize_ticket,
     today_start_iso,
 )
+
+
+# --------------------------------------------------------------- closure helpers
+# FreshService refuses to resolve/close a ticket until every field flagged
+# ``required_for_closure`` in /ticket_form_fields is populated. These helpers
+# fetch that schema, resolve human-friendly names to the ids/values the API
+# wants, validate before sending, and report exactly what is still missing --
+# so a ticket can be classified and resolved on the first try.
+CLOSURE_REQUIRED_FALLBACK = (
+    "workspace_id", "subject", "status", "urgency", "priority",
+    "category", "group", "agent", "msf_store", "resolution",
+)
+
+# Form-field name -> ticket attribute it populates when reading the ticket.
+_FIELD_TO_ATTR = {
+    "workspace_id": "workspace_id",
+    "subject": "subject",
+    "status": "status",
+    "urgency": "urgency",
+    "priority": "priority",
+    "category": "category",
+    "group": "group_id",
+    "agent": "responder_id",
+    "department": "department_id",
+    "msf_store": "msf_store",
+    "resolution": "resolution",
+}
+_CUSTOM_FIELD_NAMES = {"msf_store", "resolution"}
+
+
+def form_fields(client) -> List[dict]:
+    """Return the account's ticket form fields (with choices) from
+    ``GET /ticket_form_fields``."""
+    data = client.get_json("/ticket_form_fields")
+    fields = data.get("ticket_fields") if isinstance(data, dict) else None
+    return fields if isinstance(fields, list) else []
+
+
+def _field_by_name(fields: List[dict], name: str) -> Optional[dict]:
+    for f in fields:
+        if f.get("name") == name:
+            return f
+    return None
+
+
+def _choices(field) -> List[dict]:
+    return [c for c in (field or {}).get("choices") or [] if isinstance(c, dict)]
+
+
+def _valid_values(field) -> List[str]:
+    return [str(c.get("value")) for c in _choices(field)]
+
+
+def _find_option(options, value):
+    target = str(value).strip().lower()
+    for o in options or []:
+        if str(o.get("value")).strip().lower() == target:
+            return o
+    return None
+
+
+def _choice_id(field, value, label: str) -> int:
+    """Resolve a choice name (or a numeric id) to the FreshService id."""
+    opt = _find_option(_choices(field), value)
+    if opt is not None:
+        return opt.get("id")
+    raw = str(value).strip()
+    if raw.isdigit():
+        return int(raw)
+    raise ValueError(
+        f"{label} {value!r} is not a valid value. Valid values: "
+        + ", ".join(_valid_values(field))
+    )
+
+
+def _validate_category(fields, category, sub_category=None, item_category=None) -> None:
+    """Validate a category / sub-category / item-category path against the
+    account's category tree, raising a helpful error listing valid options."""
+    cat = _field_by_name(fields, "category")
+    parent = _find_option(_choices(cat), category)
+    if parent is None:
+        raise ValueError(
+            f"category {category!r} is not valid. Valid values: "
+            + ", ".join(_valid_values(cat))
+        )
+    sub = None
+    if sub_category:
+        sub = _find_option(parent.get("nested_options"), sub_category)
+        if sub is None:
+            valid = ", ".join(str(o.get("value")) for o in parent.get("nested_options") or []) or "(none)"
+            raise ValueError(
+                f"sub_category {sub_category!r} is not valid for category "
+                f"{category!r}. Valid sub-categories: {valid}"
+            )
+    if item_category:
+        options = (sub or {}).get("nested_options") or []
+        if _find_option(options, item_category) is None:
+            valid = ", ".join(str(o.get("value")) for o in options) or "(none)"
+            raise ValueError(
+                f"item_category {item_category!r} is not valid for "
+                f"{category!r}/{sub_category!r}. Valid items: {valid}"
+            )
+
+
+def _resolve_agent_id(client, fields, agent) -> int:
+    """Resolve an agent from a numeric id, a form-field display name, or an
+    email / partial name via the /agents directory."""
+    raw = str(agent).strip()
+    if raw.isdigit():
+        return int(raw)
+    opt = _find_option(_choices(_field_by_name(fields, "agent")), raw)
+    if opt is not None:
+        return opt.get("id")
+    low = raw.lower()
+    try:
+        agents = client.get_list("/agents", per_page=100, envelope_key="agents")
+    except Exception:  # noqa: BLE001 - fall through to a clear error
+        agents = []
+    for a in agents:
+        email = str(a.get("email") or "").lower()
+        name = str(a.get("name") or (a.get("contact") or {}).get("name") or "").lower()
+        if low == email or (name and low in name):
+            return a.get("id")
+    raise ValueError(
+        f"agent {agent!r} could not be resolved. Pass an agent id (see "
+        "list_agents) or an exact display name."
+    )
+
+
+def _classification_body(client, config, fields, *, category=None, sub_category=None,
+                         item_category=None, department=None, store=None, group=None,
+                         agent=None, impact=None, urgency=None, priority=None,
+                         workspace=None, extra_custom_fields=None) -> dict:
+    """Build the PUT body for the closure/classification fields, validating each
+    value and falling back to the configured defaults for group/agent/workspace."""
+    body: dict = {}
+    custom: dict = {}
+
+    if category is not None:
+        _validate_category(fields, category, sub_category, item_category)
+        body["category"] = category
+        if sub_category is not None:
+            body["sub_category"] = sub_category
+        if item_category is not None:
+            body["item_category"] = item_category
+
+    if department is not None:
+        raw = str(department).strip()
+        body["department_id"] = (int(raw) if raw.isdigit()
+                                 else _choice_id(_field_by_name(fields, "department"), department, "department"))
+
+    if store is not None:
+        values = [store] if isinstance(store, str) else list(store)
+        store_field = _field_by_name(fields, "msf_store")
+        for v in values:
+            if not str(v).strip().isdigit() and _find_option(_choices(store_field), v) is None:
+                raise ValueError(
+                    f"store {v!r} is not valid. Valid values: "
+                    + ", ".join(_valid_values(store_field))
+                )
+        custom["msf_store"] = values
+
+    if group is not None:
+        body["group_id"] = _choice_id(_field_by_name(fields, "group"), group, "group")
+    elif config.default_group_id:
+        body["group_id"] = config.default_group_id
+    elif config.default_group_name:
+        body["group_id"] = _choice_id(_field_by_name(fields, "group"), config.default_group_name, "group")
+
+    if agent is not None:
+        body["responder_id"] = _resolve_agent_id(client, fields, agent)
+    elif config.default_agent_id:
+        body["responder_id"] = config.default_agent_id
+    elif config.default_agent_email:
+        body["responder_id"] = _resolve_agent_id(client, fields, config.default_agent_email)
+
+    if impact is not None:
+        body["impact"] = _choice_id(_field_by_name(fields, "impact"), impact, "impact")
+    if urgency is not None:
+        body["urgency"] = _choice_id(_field_by_name(fields, "urgency"), urgency, "urgency")
+    if priority is not None:
+        body["priority"] = _choice_id(_field_by_name(fields, "priority"), priority, "priority")
+
+    if workspace is not None:
+        body["workspace_id"] = _choice_id(_field_by_name(fields, "workspace_id"), workspace, "workspace")
+    elif config.default_workspace_id:
+        body["workspace_id"] = config.default_workspace_id
+
+    if extra_custom_fields:
+        custom.update(extra_custom_fields)
+    if custom:
+        body["custom_fields"] = custom
+    return body
+
+
+def _missing_closure_fields(ticket: dict, fields: List[dict]) -> List[str]:
+    """Return the names of closure-required form fields that are still empty on
+    the given (prospective) ticket."""
+    required = [f.get("name") for f in fields if f.get("required_for_closure")]
+    if not required:
+        required = list(CLOSURE_REQUIRED_FALLBACK)
+    missing = []
+    custom = ticket.get("custom_fields") if isinstance(ticket.get("custom_fields"), dict) else {}
+    for name in required:
+        val = custom.get(name) if name in _CUSTOM_FIELD_NAMES else ticket.get(_FIELD_TO_ATTR.get(name, name))
+        if val in (None, "", [], {}):
+            missing.append(name)
+    return missing
 
 
 def _require_ticket_id(ticket_id) -> int:
@@ -277,7 +486,12 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
             status_id = status_map[key]
         body: dict = {"status": status_id}
         if resolution and resolution.strip():
-            body["resolution"] = resolution.strip()
+            # The account stores the resolution text in the custom field
+            # ``resolution`` (a top-level ``resolution`` key is rejected with
+            # "Unexpected/invalid field"). Setting status=Resolved also
+            # requires every ``required_for_closure`` field to be populated --
+            # prefer ``resolve_ticket`` for a one-shot resolve.
+            body["custom_fields"] = {"resolution": resolution.strip()}
         updated = client.put_json(f"/tickets/{tid}", body)
         return {"ticket_id": tid, "status": status, "ticket": summarize_ticket(updated.get("ticket") or {})}
 
@@ -363,3 +577,183 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
             body["note"] = note
         result = client.post_json(f"/tickets/{tid}/time_entries", body)
         return {"ticket_id": tid, "logged": True, "time_spent": ts, "result": result}
+
+    # ------------------------------------------------ classification / closure
+    @mcp.tool()
+    def list_ticket_fields(required_only: bool = False) -> dict:
+        """List the account's ticket form fields and their allowed values.
+
+        Use this to discover the valid `category` (and its nested
+        sub-categories / item categories), `group`, `agent`, `msf_store` (Store)
+        and `department` values, and which fields FreshService requires before a
+        ticket can be resolved (`required_for_closure`). Set
+        ``required_only=True`` to return just the closure-required fields. Doing
+        this classification FIRST is what lets `resolve_ticket` succeed on the
+        first try."""
+        client = get_client(config)
+        fields = form_fields(client)
+        out = []
+        for f in fields:
+            if required_only and not f.get("required_for_closure"):
+                continue
+            entry = {
+                "name": f.get("name"),
+                "label": f.get("label"),
+                "field_type": f.get("field_type"),
+                "required_for_closure": bool(f.get("required_for_closure")),
+            }
+            ch = _choices(f)
+            if ch:
+                entry["choices"] = [
+                    {**{"id": c.get("id"), "value": c.get("value")},
+                     **({"sub_categories": [o.get("value") for o in c.get("nested_options") or []]}
+                        if c.get("nested_options") else {})}
+                    for c in ch
+                ]
+            out.append(entry)
+        return {
+            "count": len(out),
+            "required_for_closure": [f.get("name") for f in fields
+                                     if f.get("required_for_closure")] or list(CLOSURE_REQUIRED_FALLBACK),
+            "fields": out,
+        }
+
+    @mcp.tool()
+    def list_departments(per_page: int = 100) -> dict:
+        """List FreshService departments (id + name) so a ticket's Department can
+        be set to the department the requester/end user works in."""
+        client = get_client(config)
+        deps = client.get_list("/departments", per_page=per_page, envelope_key="departments")
+        return {
+            "returned": len(deps),
+            "departments": [{"id": d.get("id"), "name": d.get("name")} for d in deps],
+        }
+
+    @mcp.tool()
+    def classify_ticket(ticket_id: TicketId,
+                        category: Optional[str] = None,
+                        sub_category: Optional[str] = None,
+                        item_category: Optional[str] = None,
+                        department: Optional[str] = None,
+                        store: Optional[List[str]] = None,
+                        group: Optional[str] = None,
+                        agent: Optional[str] = None,
+                        impact: Optional[str] = None,
+                        urgency: Optional[str] = None,
+                        priority: Optional[str] = None,
+                        workspace: Optional[str] = None,
+                        custom_fields: Optional[dict] = None) -> dict:
+        """Classify a ticket by setting the fields FreshService requires before it
+        can be resolved -- do this FIRST, then resolve.
+
+        Arguments (each validated against the account's form fields):
+          - category / sub_category / item_category: the issue classification
+            tree, e.g. category='User Account', sub_category='Reset Password'.
+          - department: the department the end user works in (name or id).
+          - store: one or more Store values, e.g. ['8-Atlanta'].
+          - group: agent group (name or id); defaults to the configured group.
+          - agent: assignee (id, exact display name, or email); defaults to the
+            configured agent.
+          - impact / urgency: 'low'|'medium'|'high' (or the numeric id).
+          - priority: 'low'|'medium'|'high'|'urgent' (or the numeric id).
+          - workspace: workspace name or id; defaults to the configured one.
+
+        Returns the updated ticket plus ``missing_for_closure`` (any
+        closure-required field still empty). Use list_ticket_fields first if you
+        are unsure of the valid values."""
+        client = get_client(config)
+        tid = _require_ticket_id(ticket_id)
+        fields = form_fields(client)
+        body = _classification_body(
+            client, config, fields,
+            category=category, sub_category=sub_category, item_category=item_category,
+            department=department, store=store, group=group, agent=agent,
+            impact=impact, urgency=urgency, priority=priority, workspace=workspace,
+            extra_custom_fields=custom_fields,
+        )
+        if not body:
+            raise ValueError("Provide at least one field to classify (category, department, store, group, agent, impact, urgency, priority, workspace).")
+        updated = client.put_json(f"/tickets/{tid}", body)
+        verify = client.get_one(f"/tickets/{tid}", key="ticket") or {}
+        return {
+            "ticket_id": tid,
+            "classified": True,
+            "missing_for_closure": _missing_closure_fields(verify, fields),
+            "ticket": summarize_ticket(verify),
+        }
+
+    @mcp.tool()
+    def resolve_ticket(ticket_id: TicketId, resolution: str,
+                       category: Optional[str] = None,
+                       sub_category: Optional[str] = None,
+                       item_category: Optional[str] = None,
+                       department: Optional[str] = None,
+                       store: Optional[List[str]] = None,
+                       group: Optional[str] = None,
+                       agent: Optional[str] = None,
+                       impact: Optional[str] = None,
+                       urgency: Optional[str] = None,
+                       priority: Optional[str] = None,
+                       workspace: Optional[str] = None,
+                       custom_fields: Optional[dict] = None,
+                       force: bool = False) -> dict:
+        """Resolve a ticket in ONE call: set every closure-required field
+        (classification, store, resolution note) and flip the status to Resolved.
+
+        Pass ``resolution`` (the resolution note text) and the classification
+        fields you learned (category/sub_category, department, store, group,
+        agent, impact, urgency, priority) -- or rely on the configured defaults
+        for group/agent/workspace. Do the classification with `classify_ticket`
+        first if you prefer, since these fields must be set before a ticket can
+        close.
+
+        Safety: before writing anything this reads the ticket + form schema and,
+        if a closure-required field would still be empty, raises an error naming
+        exactly which fields to set (no partial change). Set ``force=True`` to
+        attempt the resolve anyway. Verifies the result by re-reading the ticket
+        and returns ``resolved`` plus any ``missing_for_closure``."""
+        client = get_client(config)
+        tid = _require_ticket_id(ticket_id)
+        if not resolution or not resolution.strip():
+            raise ValueError("resolution is required (the resolution note text).")
+        fields = form_fields(client)
+        body = _classification_body(
+            client, config, fields,
+            category=category, sub_category=sub_category, item_category=item_category,
+            department=department, store=store, group=group, agent=agent,
+            impact=impact, urgency=urgency, priority=priority, workspace=workspace,
+            extra_custom_fields=custom_fields,
+        )
+        current = client.get_one(f"/tickets/{tid}", key="ticket") or {}
+        prospective = dict(current)
+        for k, v in body.items():
+            if k == "custom_fields":
+                merged = dict(prospective.get("custom_fields") or {})
+                merged.update(v)
+                prospective["custom_fields"] = merged
+            else:
+                prospective[k] = v
+        prospective.setdefault("custom_fields", {})["resolution"] = resolution.strip()
+        prospective["status"] = 4
+        missing = _missing_closure_fields(prospective, fields)
+        if missing and not force:
+            raise ValueError(
+                "Ticket cannot be resolved yet; these closure-required fields "
+                "would still be empty: " + ", ".join(missing)
+                + ". Set them with classify_ticket (or pass them to resolve_ticket) "
+                "and retry. Call list_ticket_fields to see valid values."
+            )
+        body["status"] = 4
+        cf = dict(body.get("custom_fields") or {})
+        cf["resolution"] = resolution.strip()
+        body["custom_fields"] = cf
+        client.put_json(f"/tickets/{tid}", body)
+        verify = client.get_one(f"/tickets/{tid}", key="ticket") or {}
+        resolved = int(verify.get("status") or 0) == 4
+        return {
+            "ticket_id": tid,
+            "resolved": resolved,
+            "status": status_name(verify.get("status")),
+            "missing_for_closure": _missing_closure_fields(verify, fields),
+            "ticket": summarize_ticket(verify),
+        }

@@ -47,6 +47,25 @@ Python [FastMCP](https://github.com/jlowin/fastmcp). It targets the FreshService
 - `assign_ticket` — route to an agent and/or group
 - `add_time_entry` — log billable time worked
 
+**Classify & resolve (closure)**
+- `list_ticket_fields` — the account's ticket form fields with their valid
+  values (category tree, stores, groups, agents, departments) and which are
+  `required_for_closure`.
+- `list_departments` — department names + ids.
+- `classify_ticket` — set the closure fields (category/sub-category,
+  department, store, group, agent, impact, urgency, priority, workspace) with
+  local validation and config defaults.
+- `resolve_ticket` — resolve in **one** call: sets the classification fields,
+  writes the resolution custom field, and flips status to Resolved. Pre-checks
+  the closure requirements and reports anything still missing instead of
+  half-applying.
+
+> FreshService refuses to resolve a ticket until every `required_for_closure`
+> field is populated (on this tenant: `workspace_id`, `subject`, `status`,
+> `urgency`, `priority`, `category`, `group`, `agent`, `msf_store`,
+> `resolution`). The resolution text is a **custom field**; a top-level
+> `resolution` key is rejected. Classify first, then resolve.
+
 **Directory / routing**
 - `search_contact` — find a requester by name or email
 - `list_agents` / `list_groups` — who's available to assign/escalate to

@@ -27,6 +27,13 @@ ENV_TIMEOUT = "FRESHSERVICE_TIMEOUT"
 # key an MCP client presents (Authorization: Bearer <key>) to the daemon, kept
 # separate from the FreshService account API key above.
 ENV_MCP_TOKEN = "FRESHSERVICE_MCP_AUTH_TOKEN"
+# Optional defaults used by the closure/classification tools so a ticket can be
+# fully classified and resolved without the caller first looking up ids.
+ENV_DEFAULT_AGENT_ID = "FRESHSERVICE_DEFAULT_AGENT_ID"
+ENV_DEFAULT_AGENT_EMAIL = "FRESHSERVICE_DEFAULT_AGENT_EMAIL"
+ENV_DEFAULT_GROUP_ID = "FRESHSERVICE_DEFAULT_GROUP_ID"
+ENV_DEFAULT_GROUP_NAME = "FRESHSERVICE_DEFAULT_GROUP_NAME"
+ENV_DEFAULT_WORKSPACE_ID = "FRESHSERVICE_DEFAULT_WORKSPACE_ID"
 
 _PASSWORD_TAG = "***REDACTED***"
 
@@ -47,6 +54,14 @@ class FreshServiceConfig:
     timeout: int = 30
     # Optional API key that gates the HTTP/SSE MCP transport.
     mcp_auth_token: str = ""
+    # Optional closure defaults: the agent to assign resolved tickets to and the
+    # group they belong to (used when a tool call omits them). Names are
+    # resolved against the ticket form-field choices when ids are not given.
+    default_agent_id: int = 0
+    default_agent_email: str = ""
+    default_group_id: int = 0
+    default_group_name: str = ""
+    default_workspace_id: int = 0
 
     def resolved_base_url(self) -> str:
         """Return the full base URL for the FreshService REST API root."""
@@ -101,7 +116,9 @@ def load_config(
     if config_file and Path(config_file).exists():
         data = json.loads(Path(config_file).read_text(encoding="utf-8"))
         for key in ("domain", "base_url", "api_key", "verify_ssl",
-                    "timeout", "mcp_auth_token"):
+                    "timeout", "mcp_auth_token", "default_agent_id",
+                    "default_agent_email", "default_group_id",
+                    "default_group_name", "default_workspace_id"):
             if key in data and data[key] is not None:
                 setattr(cfg, key, data[key])
 
@@ -121,6 +138,25 @@ def load_config(
             pass
     if os.environ.get(ENV_MCP_TOKEN):
         cfg.mcp_auth_token = os.environ[ENV_MCP_TOKEN].strip()
+    if os.environ.get(ENV_DEFAULT_AGENT_ID):
+        try:
+            cfg.default_agent_id = int(os.environ[ENV_DEFAULT_AGENT_ID])
+        except ValueError:
+            pass
+    if os.environ.get(ENV_DEFAULT_AGENT_EMAIL):
+        cfg.default_agent_email = os.environ[ENV_DEFAULT_AGENT_EMAIL].strip()
+    if os.environ.get(ENV_DEFAULT_GROUP_ID):
+        try:
+            cfg.default_group_id = int(os.environ[ENV_DEFAULT_GROUP_ID])
+        except ValueError:
+            pass
+    if os.environ.get(ENV_DEFAULT_GROUP_NAME):
+        cfg.default_group_name = os.environ[ENV_DEFAULT_GROUP_NAME].strip()
+    if os.environ.get(ENV_DEFAULT_WORKSPACE_ID):
+        try:
+            cfg.default_workspace_id = int(os.environ[ENV_DEFAULT_WORKSPACE_ID])
+        except ValueError:
+            pass
 
     # 3. Explicit arguments win.
     if domain is not None:

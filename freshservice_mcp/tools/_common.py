@@ -30,6 +30,7 @@ def summarize_ticket(t: Dict[str, Any]) -> Dict[str, Any]:
     requester = t.get("requester") or {}
     responder = t.get("responder") or {}
     group = t.get("group") or {}
+    custom = t.get("custom_fields") if isinstance(t.get("custom_fields"), dict) else {}
     return {
         "id": t.get("id"),
         "display_id": t.get("display_id"),
@@ -40,8 +41,21 @@ def summarize_ticket(t: Dict[str, Any]) -> Dict[str, Any]:
         "priority_id": t.get("priority"),
         "type": t.get("type"),
         "source": t.get("source"),
+        # Classification / closure fields (needed to make a ticket closable).
+        "category": t.get("category"),
+        "sub_category": t.get("sub_category"),
+        "item_category": t.get("item_category"),
+        "department_id": t.get("department_id"),
+        "workspace_id": t.get("workspace_id"),
+        "group_id": t.get("group_id"),
+        "responder_id": t.get("responder_id"),
+        "impact": t.get("impact"),
+        "urgency": t.get("urgency"),
+        "msf_store": custom.get("msf_store"),
+        "resolution": custom.get("resolution"),
         "requester": (requester.get("name") if isinstance(requester, dict) else None),
         "requester_email": (requester.get("email") if isinstance(requester, dict) else None),
+        "requester_id": t.get("requester_id"),
         "responder": (responder.get("name") if isinstance(responder, dict) else None),
         "group": (group.get("name") if isinstance(group, dict) else None),
         "created_at": t.get("created_at"),
