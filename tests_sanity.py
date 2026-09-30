@@ -16,6 +16,7 @@ import unittest
 from freshservice_mcp.config import FreshServiceConfig
 from freshservice_mcp.tools import ticket_tools as tt
 from freshservice_mcp.tools import conversation_tools as ct
+from freshservice_mcp.tools import change_tools as cht
 
 
 def _fields():
@@ -218,6 +219,43 @@ class MultipartUploadTests(unittest.TestCase):
     def test_prep_uploads_empty_list_is_noop(self):
         self.assertEqual(ct._prep_uploads(None), ([], []))
         self.assertEqual(ct._prep_uploads([]), ([], []))
+
+
+class ChangeSummaryTests(unittest.TestCase):
+    def test_enum_ids_map_to_names(self):
+        c = {"id": 276, "subject": "Std change", "status": 6,
+             "change_type": 2, "risk": 4, "impact": 3, "priority": 1}
+        s = cht.summarize_change(c)
+        self.assertEqual(s["status"], "Closed")
+        self.assertEqual(s["change_type"], "Standard")
+        self.assertEqual(s["risk"], "Very High")
+        self.assertEqual(s["impact"], "High")
+        self.assertEqual(s["priority"], "Low")
+        self.assertEqual(s["status_id"], 6)
+
+    def test_unknown_enum_is_none_not_crash(self):
+        s = cht.summarize_change({"id": 1, "status": 99, "risk": None})
+        self.assertIsNone(s["status"])
+        self.assertIsNone(s["risk"])
+
+    def test_attachments_and_services_summarised(self):
+        s = cht.summarize_change({
+            "id": 1,
+            "attachments": [{"id": 5, "name": "plan.pdf",
+                             "content_type": "application/pdf", "size": 10}],
+            "assets": [{"id": 1}, {"id": 2}],
+            "impacted_services": ["Email"],
+        })
+        self.assertEqual(s["attachment_count"], 1)
+        self.assertEqual(s["attachments"][0]["name"], "plan.pdf")
+        self.assertEqual(s["asset_count"], 2)
+        self.assertEqual(s["impacted_services"], ["Email"])
+
+    def test_require_change_id_accepts_bare_and_junk(self):
+        self.assertEqual(cht._require_change_id("276"), 276)
+        self.assertEqual(cht._require_change_id(276), 276)
+        with self.assertRaises(ValueError):
+            cht._require_change_id("abc")
 
 
 if __name__ == "__main__":

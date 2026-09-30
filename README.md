@@ -56,6 +56,20 @@ Python [FastMCP](https://github.com/jlowin/fastmcp). It targets the FreshService
 - `assign_ticket` — route to an agent and/or group
 - `add_time_entry` — log billable time worked
 
+**Change module (Change Management)**
+- `list_changes` — paginated list of changes (newest first); accepts
+  `updated_since` and `order_by`/`order_type`. This API has **no
+  `/changes/filter` escape hatch**, so filter client-side; the response echoes
+  the id→name maps for status/change_type/risk/impact/priority.
+- `view_change` — one change by id (type, status, risk, impact, approval status,
+  planned window, impacted services, attachments). Only `stats` is a valid
+  `include`; changes have no conversation thread.
+
+> Change enums (from `/change_form_fields`): status 1 Open, 2 Planning,
+> 3 Awaiting Approval, 4 Pending Release, 5 Pending Review, 6 Closed; change_type
+> 1 Minor, 2 Standard, 3 Major, 4 Emergency; risk 1 Low…4 Very High; impact
+> 1 Low/2 Medium/3 High; priority 1 Low…4 Urgent.
+
 **Classify & resolve (closure)**
 - `list_ticket_fields` — the account's ticket form fields with their valid
   values (category tree, stores, groups, agents, departments) and which are

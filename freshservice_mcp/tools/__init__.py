@@ -12,10 +12,11 @@ if TYPE_CHECKING:  # pragma: no cover
     from fastmcp import FastMCP
     from ..config import FreshServiceConfig
 
-from . import conversation_tools, directory_tools, ticket_tools
+from . import change_tools, conversation_tools, directory_tools, ticket_tools
 
 
 def register_all(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     ticket_tools.register(mcp, config)
+    change_tools.register(mcp, config)
     conversation_tools.register(mcp, config)
     directory_tools.register(mcp, config)
