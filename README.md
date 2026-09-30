@@ -33,10 +33,13 @@ Python [FastMCP](https://github.com/jlowin/fastmcp). It targets the FreshService
 
 **Read attachments / screenshots**
 - `list_ticket_attachments` — list a ticket's attachments with metadata
-  (id, content type, size, pixel dimensions, sender). Surfaces images the
-  requester pasted *inline in the message body* — these do **not** appear in the
-  API's `attachments` array, so a text-only view of the conversation looks
-  "blank".
+  (id, content type, size, pixel dimensions, sender, and a `scope` field).
+  Scans **three** places and merges them: ticket-level attachments
+  (`ticket.attachments`, `scope="ticket"` — files attached to the original
+  ticket/email), images the requester pasted *inline in a message body*
+  (`scope="conversation"`), and a conversation's own `attachments` array.
+  The ticket-level and inline sources do **not** appear on every conversation,
+  so a text-only view of the ticket looks "blank".
 - `view_attachments` — download image attachments and return them as real
   images so a vision-capable model can read a screenshot. Small signature logos
   are skipped by default.

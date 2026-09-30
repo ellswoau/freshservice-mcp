@@ -221,6 +221,69 @@ class MultipartUploadTests(unittest.TestCase):
         self.assertEqual(ct._prep_uploads([]), ([], []))
 
 
+class TicketAttachmentTests(unittest.TestCase):
+    """Ticket-level attachments (ticket.attachments) must be surfaced even when
+    no conversation carries them -- the bug behind "no image was attached"."""
+
+    TICKET = {
+        "id": 47480,
+        "subject": "Email Overlap",
+        "requester": {"name": "Chris Jollie", "email": "cjollie@wellertruck.com"},
+        "created_at": "2026-09-30T16:18:20Z",
+        "attachments": [{
+            "id": 21119235017,
+            "name": "EMAIL OVERLAP.jpg",
+            "content_type": "image/jpeg",
+            "size": 146846,
+            "created_at": "2026-09-30T16:18:16Z",
+            "attachment_url": "https://x.attachments.freshservice.com/a/b.jpg?Signature=abc",
+        }],
+    }
+
+    class _FakeClient:
+        def __init__(self, ticket, conversations=None):
+            self._ticket = ticket
+            self._convs = conversations or []
+            self.calls = []
+
+        def get_one(self, path, key="ticket", **kw):
+            self.calls.append(("get_one", path))
+            return self._ticket
+
+        def get_json(self, path, **kw):
+            self.calls.append(("get_json", path))
+            if path.endswith("/conversations"):
+                return {"conversations": self._convs}
+            return {}
+
+    def test_ticket_attachment_collected_without_conversations(self):
+        c = self._FakeClient(self.TICKET)
+        items = ct._collect_attachments(c, 47480)
+        self.assertEqual(len(items), 1)
+        a = items[0]
+        self.assertEqual(a["attachment_id"], 21119235017)
+        self.assertEqual(a["scope"], "ticket")
+        self.assertEqual(a["alt"], "EMAIL OVERLAP.jpg")
+        self.assertTrue(a["url"].endswith("Signature=abc"))
+        self.assertEqual(a["conversation_id"], None)
+
+    def test_ticket_attachments_excluded_when_scoped_to_a_conversation(self):
+        c = self._FakeClient(self.TICKET, [{"id": 5, "body": "", "attachments": []}])
+        items = ct._collect_attachments(c, 47480, conversation_id=5)
+        self.assertEqual(items, [])
+
+    def test_summarize_ticket_exposes_attachments(self):
+        s = tt.summarize_ticket(self.TICKET)
+        self.assertEqual(s["attachment_count"], 1)
+        self.assertEqual(s["attachments"][0]["name"], "EMAIL OVERLAP.jpg")
+        self.assertEqual(s["attachments"][0]["attachment_id"], 21119235017)
+
+    def test_summarize_ticket_without_attachments_is_empty(self):
+        s = tt.summarize_ticket({"id": 1})
+        self.assertEqual(s["attachment_count"], 0)
+        self.assertEqual(s["attachments"], [])
+
+
 class ChangeSummaryTests(unittest.TestCase):
     def test_enum_ids_map_to_names(self):
         c = {"id": 276, "subject": "Std change", "status": 6,

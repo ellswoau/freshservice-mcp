@@ -25,6 +25,27 @@ def priority_name(value) -> str:
         return str(value)
 
 
+def summarize_attachment(a: Any) -> Dict[str, Any]:
+    """Normalise one FreshService attachment dict.
+
+    FreshService uses different key shapes depending on where the attachment
+    lives: a ticket-level attachment carries ``attachment_url`` (and no
+    ``id``-vs-``attachment_id`` consistency), while a conversation-level
+    attachment uses ``attachment_url``/``url``. This maps both onto one shape
+    so callers never have to care which endpoint returned it.
+    """
+    if not isinstance(a, dict):
+        return {}
+    return {
+        "attachment_id": a.get("id") if a.get("id") is not None else a.get("attachment_id"),
+        "name": a.get("name"),
+        "content_type": a.get("content_type"),
+        "size": a.get("size"),
+        "created_at": a.get("created_at"),
+        "url": a.get("attachment_url") or a.get("url"),
+    }
+
+
 def summarize_ticket(t: Dict[str, Any]) -> Dict[str, Any]:
     """Build a compact, human-readable summary of a ticket dict."""
     requester = t.get("requester") or {}
@@ -58,6 +79,11 @@ def summarize_ticket(t: Dict[str, Any]) -> Dict[str, Any]:
         "requester_id": t.get("requester_id"),
         "responder": (responder.get("name") if isinstance(responder, dict) else None),
         "group": (group.get("name") if isinstance(group, dict) else None),
+        # Ticket-level attachments (files the requester attached to the
+        # original ticket/email). These live on the ticket object, NOT on any
+        # conversation, so callers that only scan conversations miss them.
+        "attachment_count": len(t.get("attachments") or []),
+        "attachments": [summarize_attachment(a) for a in (t.get("attachments") or [])],
         "created_at": t.get("created_at"),
         "updated_at": t.get("updated_at"),
         "due_by": t.get("due_by"),

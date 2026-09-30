@@ -112,16 +112,48 @@ def _download(client, tid: int, a: dict) -> tuple:
 
 
 def _collect_attachments(client, tid: int, conversation_id: Optional[int] = None) -> List[dict]:
-    """Gather attachments across a ticket's conversations.
+    """Gather attachments across a ticket.
 
-    Combines inline images parsed from each conversation's HTML body with any
-    entries in the conversation ``attachments`` array.
+    Combines three sources, in this order:
+
+    1. **Ticket-level** attachments -- files the requester attached to the
+       original ticket/email. FreshService stores these on the ticket object's
+       ``attachments`` array, *not* on any conversation, so a caller that only
+       scans conversations sees none of them (the bug behind "no image was
+       attached to the ticket").
+    2. Inline images parsed from each conversation's HTML body.
+    3. Entries in each conversation's ``attachments`` array.
+
+    Ticket-level entries are only included when the whole ticket is being
+    considered (``conversation_id`` is not set), since they do not belong to a
+    single conversation.
     """
+    out: List[dict] = []
+
+    if conversation_id is None:
+        ticket = client.get_one(f"/tickets/{tid}", key="ticket") or {}
+        for a in (ticket.get("attachments") or []):
+            if isinstance(a, dict):
+                out.append({
+                    "attachment_id": a.get("id"),
+                    "url": a.get("attachment_url") or a.get("url"),
+                    "alt": a.get("name"),
+                    "content_type": a.get("content_type"),
+                    "size": a.get("size"),
+                    "width": None,
+                    "height": None,
+                    "conversation_id": None,
+                    "incoming": True,
+                    "from_email": (ticket.get("requester") or {}).get("email")
+                    if isinstance(ticket.get("requester"), dict) else None,
+                    "created_at": a.get("created_at") or ticket.get("created_at"),
+                    "scope": "ticket",
+                })
+
     data = client.get_json(f"/tickets/{tid}/conversations")
     convs = data.get("conversations") if isinstance(data, dict) else data
     if not isinstance(convs, list):
         convs = []
-    out: List[dict] = []
     for c in convs:
         if conversation_id is not None and int(c.get("id")) != int(conversation_id):
             continue
@@ -132,7 +164,7 @@ def _collect_attachments(client, tid: int, conversation_id: Optional[int] = None
             "created_at": c.get("created_at"),
         }
         for a in extract_inline_attachments(c.get("body")):
-            out.append({**meta, **a})
+            out.append({**meta, **a, "scope": "conversation"})
         for a in (c.get("attachments") or []):
             if isinstance(a, dict):
                 out.append({
@@ -140,8 +172,11 @@ def _collect_attachments(client, tid: int, conversation_id: Optional[int] = None
                     "attachment_id": a.get("id"),
                     "url": a.get("attachment_url") or a.get("url"),
                     "alt": a.get("name"),
+                    "content_type": a.get("content_type"),
+                    "size": a.get("size"),
                     "width": None,
                     "height": None,
+                    "scope": "conversation",
                 })
     return out
 
@@ -236,19 +271,25 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
                                 min_width: int = 0,
                                 min_height: int = 0,
                                 probe_sizes: bool = True):
-        """List the attachments on a ticket's conversations, **including images
-        the requester pasted inline in the message body**.
+        """List the attachments on a ticket, **including images the requester
+        attached to the ticket itself or pasted inline in a message body**.
 
-        Important: FreshService renders pasted screenshots as inline ``<img>``
-        tags inside the conversation HTML body and leaves the API's
-        ``attachments`` array empty -- so a plain text view of the conversation
-        shows a 'blank' message. This tool surfaces them.
+        Three sources are scanned and merged:
+
+        * **Ticket-level** attachments (``ticket.attachments``) -- files attached
+          to the original ticket/email. FreshService stores these on the ticket
+          object, not on any conversation, so they are easy to miss; the
+          returned ``scope`` is ``"ticket"`` for them.
+        * Inline ``<img>`` screenshots inside a conversation's HTML body
+          (``scope`` ``"conversation"``).
+        * Entries in a conversation's ``attachments`` array.
 
         Returns metadata per attachment: ``attachment_id``, ``conversation_id``,
-        ``from_email``, ``created_at``, ``content_type``, ``size``, ``width``,
-        ``height`` and the (pre-signed) ``url``. Set ``probe_sizes=False`` to
-        skip downloading each image just to measure it. Use ``min_width`` /
-        ``min_height`` to filter out small signature logos (~190x53).
+        ``scope``, ``from_email``, ``created_at``, ``content_type``, ``size``,
+        ``width``, ``height`` and the (pre-signed) ``url``. Set
+        ``probe_sizes=False`` to skip downloading each image just to measure it.
+        Use ``min_width`` / ``min_height`` to filter out small signature logos
+        (~190x53).
 
         To actually *see* a screenshot, pass its id to ``view_attachments``."""
         client = get_client(config)
@@ -259,14 +300,15 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
             entry = {
                 "attachment_id": a.get("attachment_id"),
                 "conversation_id": a.get("conversation_id"),
+                "scope": a.get("scope"),
                 "from_email": a.get("from_email"),
                 "incoming": a.get("incoming"),
                 "created_at": a.get("created_at"),
                 "name": a.get("alt"),
                 "width": a.get("width"),
                 "height": a.get("height"),
-                "content_type": None,
-                "size": None,
+                "content_type": a.get("content_type"),
+                "size": a.get("size"),
                 "probed": False,
             }
             if probe_sizes:
@@ -306,10 +348,11 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         so a vision-capable model can read a screenshot directly.
 
         Use this whenever a requester's message looks empty or says 'see the
-        error below' but the text has no content: the content is usually an
-        inline screenshot. Discover ids with ``list_ticket_attachments`` first,
-        or leave ``attachment_ids`` unset to auto-load the likely screenshots on
-        the ticket (small signature logos are skipped via ``min_width`` /
+        attached' but the text has no content: the content is usually a
+        screenshot attached to the ticket or pasted inline in a message.
+        Discover ids with ``list_ticket_attachments`` first, or leave
+        ``attachment_ids`` unset to auto-load the likely screenshots on the
+        ticket (small signature logos are skipped via ``min_width`` /
         ``min_height``).
 
         ``max_images`` caps how many are returned; each image is capped at 8 MB.
