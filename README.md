@@ -21,8 +21,10 @@ Python [FastMCP](https://github.com/jlowin/fastmcp). It targets the FreshService
   statuses
 
 **Talk to people**
-- `reply_to_requestor` — public reply to the requester (conversation)
-- `add_private_note` — internal note (private conversation), not visible to requester
+- `reply_to_requestor` — public reply to the requester (conversation); accepts
+  `attachments` (local file paths or http(s) URLs) to attach files to the reply
+- `add_private_note` — internal note (private conversation), not visible to
+  requester; also accepts `attachments`
 - `cc_email_on_ticket` — CC a manager / extra recipients on the ticket
 - `notify_emails` — email-notify IT team members / escalation contacts now
 - `list_ticket_conversations` — full conversation history (public/private marked);
@@ -38,6 +40,13 @@ Python [FastMCP](https://github.com/jlowin/fastmcp). It targets the FreshService
 - `view_attachments` — download image attachments and return them as real
   images so a vision-capable model can read a screenshot. Small signature logos
   are skipped by default.
+
+**Write attachments (upload)**
+- `reply_to_requestor` / `add_private_note` take an optional `attachments` list
+  of local file paths or http(s) URLs; they are POSTed to FreshService as
+  repeated `attachments[]` multipart fields. Outbound uploads are capped at
+  10 files and 25 MB each per call (`MAX_UPLOADS_PER_CALL` / `MAX_UPLOAD_BYTES`
+  in `tools/conversation_tools.py`).
 
 **Manage tickets**
 - `create_ticket` / `update_ticket`

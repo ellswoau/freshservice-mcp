@@ -93,17 +93,26 @@ class FreshServiceClient:
         params: Optional[Dict[str, Any]] = None,
         json_body: Any = None,
         form_data: Optional[Dict[str, Any]] = None,
+        upload_files: Optional[List[tuple]] = None,
     ) -> requests.Response:
         url = f"{self.base_url}{self.API_PREFIX}{path}"
         resp = None
         attempt = 0
         while True:
             attempt += 1
-            if form_data is not None:
-                # multipart/form-data (FreshService notes use `-F` form fields).
-                # ``files`` triggers multipart encoding with a boundary; drop the
-                # session's JSON Content-Type so requests can set it correctly.
-                files = {k: (None, v) for k, v in form_data.items()}
+            if form_data is not None or upload_files is not None:
+                # multipart/form-data (FreshService reply/notes take `-F` form
+                # fields, and attachments as uploaded files). ``files`` triggers
+                # multipart encoding with a boundary; drop the session's JSON
+                # Content-Type so requests can set it correctly.
+                files: List[tuple] = []
+                for k, v in (form_data or {}).items():
+                    # A list value becomes repeated fields (e.g. to_emails[]).
+                    if isinstance(v, (list, tuple)):
+                        files.extend((k, (None, item)) for item in v)
+                    else:
+                        files.append((k, (None, v)))
+                files.extend(upload_files or [])
                 resp = self._session.request(
                     method,
                     url,
@@ -176,6 +185,31 @@ class FreshServiceClient:
     ATTACHMENT_HOSTS = ("attachment.freshservice.com",
                         ".attachments.freshservice.com")
 
+    @staticmethod
+    def read_file_bytes(path_or_url: str, *, timeout: float = 30.0) -> tuple:
+        """Read a local file *or* download an http(s) URL into bytes for use as
+        an outbound attachment. Returns ``(filename, content_bytes,
+        content_type)`` (content type guessed from the extension).
+
+        Local paths only; URLs are fetched directly (they are caller-supplied,
+        not pre-signed FreshService links)."""
+        import mimetypes
+        name = ""
+        if path_or_url.startswith(("http://", "https://")):
+            r = requests.get(path_or_url, timeout=timeout)
+            r.raise_for_status()
+            raw = r.content
+            name = os.path.basename(urllib.parse.urlparse(path_or_url).path) or "attachment"
+        else:
+            p = os.path.expanduser(path_or_url)
+            if not os.path.isfile(p):
+                raise ValueError(f"attachment file not found: {path_or_url}")
+            with open(p, "rb") as fh:
+                raw = fh.read()
+            name = os.path.basename(p)
+        ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return name, raw, ctype
+
     def download_binary(self, path_or_url: str, *, use_auth: bool = True) -> tuple:
         """Download binary content (e.g. a ticket attachment/screenshot).
 
@@ -220,6 +254,27 @@ class FreshServiceClient:
         """POST as multipart/form-data (FreshService's notes endpoint writes via
         form fields, e.g. ``body`` + ``private``)."""
         resp = self._request("POST", path, params=params, form_data=data)
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return resp.text
+
+    def post_form_files(
+        self,
+        path: str,
+        data: Dict[str, Any],
+        files: List[tuple],
+        *,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """POST as multipart/form-data carrying both form fields and file
+        uploads (FreshService's reply/notes endpoints accept attachments this
+        way). ``files`` is a list of ReadyFile tuples
+        ``(field_name, (filename, bytes, content_type))``."""
+        resp = self._request("POST", path, params=params, form_data=data,
+                             upload_files=files)
         if not resp.content:
             return None
         try:

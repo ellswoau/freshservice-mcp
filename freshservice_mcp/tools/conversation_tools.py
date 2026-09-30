@@ -26,6 +26,12 @@ from ._common import (
 # Guardrails so a single call cannot pull unbounded bytes / images into context.
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGES_PER_CALL = 8
+# Outbound attachment guardrails (one reply/note cannot ship unbounded bytes).
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_UPLOADS_PER_CALL = 10
+# FreshService's reply/notes endpoints take uploaded files as repeated
+# ``attachments[]`` form fields.
+ATTACHMENT_FIELD = "attachments[]"
 # Default size gate: email-signature logos are ~190x53, real screenshots are
 # larger. Used only by the bulk image tool; an explicit id bypasses it.
 DEFAULT_MIN_WIDTH = 250
@@ -41,6 +47,38 @@ def _require_ticket_id(ticket_id) -> int:
     if tid <= 0:
         raise ValueError("ticket_id must be a positive integer.")
     return tid
+
+
+def _prep_uploads(attachments: Optional[List[str]]) -> tuple:
+    """Turn a list of local file paths / http(s) URLs into multipart upload
+    tuples for FreshService's ``attachments[]`` field.
+
+    Returns ``(files, summary)`` where ``files`` is a list of
+    ``(ATTACHMENT_FIELD, (filename, bytes, content_type))`` and ``summary`` is a
+    small metadata list for the tool's return value.
+    """
+    if not attachments:
+        return [], []
+    if len(attachments) > MAX_UPLOADS_PER_CALL:
+        raise ValueError(
+            f"too many attachments ({len(attachments)}); max {MAX_UPLOADS_PER_CALL} per call."
+        )
+    from ..client import FreshServiceClient
+    files: List[tuple] = []
+    summary: List[dict] = []
+    for item in attachments:
+        if not item or not str(item).strip():
+            continue
+        name, raw, ctype = FreshServiceClient.read_file_bytes(str(item))
+        if not raw:
+            raise ValueError(f"attachment is empty: {item}")
+        if len(raw) > MAX_UPLOAD_BYTES:
+            raise ValueError(
+                f"attachment {name} is {len(raw)} bytes (> {MAX_UPLOAD_BYTES} max)."
+            )
+        files.append((ATTACHMENT_FIELD, (name, raw, ctype)))
+        summary.append({"name": name, "content_type": ctype, "size": len(raw)})
+    return files, summary
 
 
 def _probe_dims(raw: bytes) -> tuple:
@@ -112,43 +150,66 @@ def _collect_attachments(client, tid: int, conversation_id: Optional[int] = None
 def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     @mcp.tool()
     def reply_to_requestor(ticket_id: TicketId, body: str,
-                           to_emails: Optional[List[str]] = None) -> dict:
+                           to_emails: Optional[List[str]] = None,
+                           attachments: Optional[List[str]] = None) -> dict:
         """Send an outgoing reply to the ticket requester (and any extra
         recipients via to_emails, e.g. to keep someone else in the loop). The
         reply becomes a public, requester-visible conversation entry.
+
+        ``attachments`` optionally attaches files to the reply: a list of local
+        file paths or http(s) URLs (e.g. "/tmp/report.pdf" or a signed link).
+        FreshService caps attachment size/type per account.
 
         Uses POST /api/v2/tickets/{id}/reply."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         if not body or not body.strip():
             raise ValueError("body must not be empty.")
-        payload: dict = {"body": body}
-        if to_emails:
-            payload["to_emails"] = list(to_emails)
-        result = client.post_json(f"/tickets/{tid}/reply", payload)
+        files, uploaded = _prep_uploads(attachments)
+        if files:
+            form: Dict[str, Any] = {"body": body}
+            if to_emails:
+                form["to_emails[]"] = list(to_emails)
+            result = client.post_form_files(f"/tickets/{tid}/reply", form, files)
+        else:
+            payload: dict = {"body": body}
+            if to_emails:
+                payload["to_emails"] = list(to_emails)
+            result = client.post_json(f"/tickets/{tid}/reply", payload)
         return {
             "ticket_id": tid,
             "sent": True,
             "to_emails": to_emails or [],
+            "attachments": uploaded,
             "conversation_id": (result or {}).get("conversation", {}).get("id")
             or (result or {}).get("note", {}).get("id"),
         }
 
     @mcp.tool()
-    def add_private_note(ticket_id: TicketId, body: str) -> dict:
+    def add_private_note(ticket_id: TicketId, body: str,
+                         attachments: Optional[List[str]] = None) -> dict:
         """Add a private internal note to a ticket (not visible to the
         requester). Use for internal observations, troubleshooting notes, or to
         pass context to colleagues.
+
+        ``attachments`` optionally attaches files to the note: a list of local
+        file paths or http(s) URLs.
 
         Uses POST /api/v2/tickets/{id}/notes with private=true (multipart)."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         if not body or not body.strip():
             raise ValueError("body must not be empty.")
-        result = client.post_form(f"/tickets/{tid}/notes", {"body": body, "private": "true"})
+        files, uploaded = _prep_uploads(attachments)
+        form: Dict[str, Any] = {"body": body, "private": "true"}
+        if files:
+            result = client.post_form_files(f"/tickets/{tid}/notes", form, files)
+        else:
+            result = client.post_form(f"/tickets/{tid}/notes", form)
         return {
             "ticket_id": tid,
             "added": True,
+            "attachments": uploaded,
             "conversation_id": (result or {}).get("note", {}).get("id")
             or (result or {}).get("conversation", {}).get("id"),
         }

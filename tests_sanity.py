@@ -15,6 +15,7 @@ import unittest
 
 from freshservice_mcp.config import FreshServiceConfig
 from freshservice_mcp.tools import ticket_tools as tt
+from freshservice_mcp.tools import conversation_tools as ct
 
 
 def _fields():
@@ -135,6 +136,88 @@ class ClassificationBodyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tt._classification_body(None, _config(), _fields(),
                                     category="Hardware", sub_category="Reset Password")
+
+
+class _FakeResp:
+    def __init__(self, status=200, payload=b'{"ok": true}'):
+        self.status_code = status
+        self.content = payload
+        self.headers = {"Content-Type": "application/json"}
+        self.text = payload.decode() if isinstance(payload, bytes) else str(payload)
+
+    def json(self):
+        import json
+        return json.loads(self.content.decode() if isinstance(self.content, bytes)
+                          else self.content)
+
+
+class _FakeSession:
+    """Captures the multipart/files kwargs a real requests.Session would get."""
+    def __init__(self):
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append({"method": method, "url": url, **kwargs})
+        return _FakeResp()
+
+
+def _client():
+    from freshservice_mcp.client import FreshServiceClient
+    c = FreshServiceClient(FreshServiceConfig(domain="acme", api_key="k"))
+    c._session = _FakeSession()
+    return c
+
+
+class MultipartUploadTests(unittest.TestCase):
+    def test_post_form_files_encodes_file_and_fields(self):
+        c = _client()
+        files = [("attachments[]", ("a.txt", b"hi", "text/plain"))]
+        c.post_form_files("/tickets/1/reply", {"body": "see attached"}, files)
+        call = c._session.calls[0]
+        sent = call["files"]
+        # form field present as a (None, value) tuple
+        self.assertIn(("body", (None, "see attached")), sent)
+        # upload present as (name, bytes, ctype), never (None, v)
+        self.assertIn(("attachments[]", ("a.txt", b"hi", "text/plain")), sent)
+        # multipart sets its own content type
+        self.assertEqual(call["headers"].get("Content-Type"), None)
+
+    def test_list_form_value_repeats_field(self):
+        c = _client()
+        c.post_form_files("/tickets/1/reply",
+                          {"body": "x", "to_emails[]": ["a@b.c", "d@e.f"]}, [])
+        sent = c._session.calls[0]["files"]
+        self.assertEqual(sent.count(("to_emails[]", (None, "a@b.c"))), 1)
+        self.assertEqual(sent.count(("to_emails[]", (None, "d@e.f"))), 1)
+
+    def test_prep_uploads_reads_local_file(self):
+        import os as _os
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+            fh.write("hello")
+            path = fh.name
+        try:
+            files, summary = ct._prep_uploads([path])
+        finally:
+            _os.unlink(path)
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0][0], "attachments[]")
+        self.assertEqual(files[0][1][1], b"hello")
+        self.assertEqual(files[0][1][2], "text/plain")
+        self.assertEqual(summary[0]["size"], 5)
+
+    def test_prep_uploads_missing_file_raises(self):
+        with self.assertRaises(ValueError):
+            ct._prep_uploads(["/no/such/file-xyz.bin"])
+
+    def test_prep_uploads_too_many_raises(self):
+        too_many = [f"/tmp/f{i}.txt" for i in range(ct.MAX_UPLOADS_PER_CALL + 1)]
+        with self.assertRaises(ValueError):
+            ct._prep_uploads(too_many)
+
+    def test_prep_uploads_empty_list_is_noop(self):
+        self.assertEqual(ct._prep_uploads(None), ([], []))
+        self.assertEqual(ct._prep_uploads([]), ([], []))
 
 
 if __name__ == "__main__":
