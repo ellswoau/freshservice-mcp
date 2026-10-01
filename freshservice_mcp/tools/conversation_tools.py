@@ -114,19 +114,25 @@ def _download(client, tid: int, a: dict) -> tuple:
 def _collect_attachments(client, tid: int, conversation_id: Optional[int] = None) -> List[dict]:
     """Gather attachments across a ticket.
 
-    Combines three sources, in this order:
+    Combines four sources, in this order:
 
     1. **Ticket-level** attachments -- files the requester attached to the
        original ticket/email. FreshService stores these on the ticket object's
        ``attachments`` array, *not* on any conversation, so a caller that only
        scans conversations sees none of them (the bug behind "no image was
        attached to the ticket").
-    2. Inline images parsed from each conversation's HTML body.
-    3. Entries in each conversation's ``attachments`` array.
+    2. **Inline images in the ticket ``description``** -- a screenshot pasted
+       into the ticket body (portal or email) renders as an inline ``<img>`` in
+       ``ticket.description`` and is **not** copied into ``ticket.attachments``.
+       This is the ticket-object twin of (3); without it, a screenshot pasted
+       into the *body* is invisible even though the same paste in a *message*
+       is found.
+    3. Inline images parsed from each conversation's HTML body.
+    4. Entries in each conversation's ``attachments`` array.
 
-    Ticket-level entries are only included when the whole ticket is being
-    considered (``conversation_id`` is not set), since they do not belong to a
-    single conversation.
+    Ticket-level and ticket-description entries are only included when the whole
+    ticket is being considered (``conversation_id`` is not set), since they do
+    not belong to a single conversation.
     """
     out: List[dict] = []
 
@@ -149,6 +155,18 @@ def _collect_attachments(client, tid: int, conversation_id: Optional[int] = None
                     "created_at": a.get("created_at") or ticket.get("created_at"),
                     "scope": "ticket",
                 })
+        # Inline screenshots pasted into the ticket description (portal/email
+        # body). They live only in ``description`` HTML, never in
+        # ``ticket.attachments``; scope "ticket_description".
+        desc_meta = {
+            "conversation_id": None,
+            "incoming": True,
+            "from_email": (ticket.get("requester") or {}).get("email")
+            if isinstance(ticket.get("requester"), dict) else None,
+            "created_at": ticket.get("created_at"),
+        }
+        for a in extract_inline_attachments(ticket.get("description")):
+            out.append({**desc_meta, **a, "scope": "ticket_description"})
 
     data = client.get_json(f"/tickets/{tid}/conversations")
     convs = data.get("conversations") if isinstance(data, dict) else data
@@ -272,14 +290,20 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
                                 min_height: int = 0,
                                 probe_sizes: bool = True):
         """List the attachments on a ticket, **including images the requester
-        attached to the ticket itself or pasted inline in a message body**.
+        attached to the ticket itself, pasted into the ticket body, or pasted
+        inline in a message body**.
 
-        Three sources are scanned and merged:
+        Four sources are scanned and merged:
 
         * **Ticket-level** attachments (``ticket.attachments``) -- files attached
           to the original ticket/email. FreshService stores these on the ticket
           object, not on any conversation, so they are easy to miss; the
           returned ``scope`` is ``"ticket"`` for them.
+        * **Inline ``<img>`` screenshots in the ticket ``description``** -- a
+          screenshot pasted into the ticket *body* (portal or email) renders
+          here and is **not** copied into ``ticket.attachments``; the returned
+          ``scope`` is ``"ticket_description"``. This is the common case for
+          "here's a screenshot" tickets.
         * Inline ``<img>`` screenshots inside a conversation's HTML body
           (``scope`` ``"conversation"``).
         * Entries in a conversation's ``attachments`` array.
@@ -349,7 +373,8 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
 
         Use this whenever a requester's message looks empty or says 'see the
         attached' but the text has no content: the content is usually a
-        screenshot attached to the ticket or pasted inline in a message.
+        screenshot pasted into the ticket body (`ticket.description`), pasted
+        inline in a message, or attached to the ticket.
         Discover ids with ``list_ticket_attachments`` first, or leave
         ``attachment_ids`` unset to auto-load the likely screenshots on the
         ticket (small signature logos are skipped via ``min_width`` /

@@ -84,6 +84,17 @@ def summarize_ticket(t: Dict[str, Any]) -> Dict[str, Any]:
         # conversation, so callers that only scan conversations miss them.
         "attachment_count": len(t.get("attachments") or []),
         "attachments": [summarize_attachment(a) for a in (t.get("attachments") or [])],
+        # Inline screenshots pasted into the ticket *description* HTML (portal
+        # or email body). FreshService does NOT copy these into
+        # ``ticket.attachments``, so this is the only place they surface on the
+        # ticket object itself -- metadata only; fetch the bytes with
+        # view_attachments.
+        "inline_image_count": len(extract_inline_attachments(t.get("description"))),
+        "inline_images": [
+            {"attachment_id": a.get("attachment_id"), "alt": a.get("alt"),
+             "width": a.get("width"), "height": a.get("height")}
+            for a in extract_inline_attachments(t.get("description"))
+        ],
         "created_at": t.get("created_at"),
         "updated_at": t.get("updated_at"),
         "due_by": t.get("due_by"),

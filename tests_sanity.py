@@ -283,6 +283,52 @@ class TicketAttachmentTests(unittest.TestCase):
         self.assertEqual(s["attachment_count"], 0)
         self.assertEqual(s["attachments"], [])
 
+    # ---- inline screenshots pasted into the ticket *body* --------------
+    # FreshService renders a portal/email screenshot as an inline <img> in
+    # ``ticket.description`` and does NOT copy it into ``ticket.attachments``;
+    # scanning only conversations + attachments missed exactly this case.
+    DESC_TICKET = {
+        "id": 47504,
+        "subject": "Inv 403812577",
+        "requester": {"name": "Kari Williams", "email": "kwilliams@wellertruck.com"},
+        "created_at": "2026-10-01T11:21:17Z",
+        "attachments": [],
+        "description": (
+            '<div>see the screenshot</div>'
+            '<img style="max-width: 1562px;" '
+            'src="https://attachment.freshservice.com/inline/attachment?token=eyJx" '
+            'class="inline-image" data-id = "21119324543" data-store-type = "1">'
+            '<img width="177" height="49" '
+            'src="https://attachment.freshservice.com/inline/attachment?token=eyJ5" '
+            'class="inline-image" data-id = "21119324542" data-store-type = "1">'
+        ),
+    }
+
+    def test_inline_description_images_are_collected(self):
+        c = self._FakeClient(self.DESC_TICKET)
+        items = ct._collect_attachments(c, 47504)
+        self.assertEqual(len(items), 2)
+        for a in items:
+            self.assertEqual(a["scope"], "ticket_description")
+            self.assertEqual(a["from_email"], "kwilliams@wellertruck.com")
+            self.assertEqual(a["conversation_id"], None)
+        # the real screenshot (no width/height attrs) and the logo-preserving one
+        ids = {a["attachment_id"] for a in items}
+        self.assertEqual(ids, {21119324543, 21119324542})
+        sized = {a["attachment_id"]: (a["width"], a["height"]) for a in items}
+        self.assertEqual(sized[21119324542], (177, 49))
+        self.assertEqual(sized[21119324543], (None, None))
+
+    def test_inline_description_images_excluded_when_scoped_to_a_conversation(self):
+        c = self._FakeClient(self.DESC_TICKET, [{"id": 5, "body": "", "attachments": []}])
+        items = ct._collect_attachments(c, 47504, conversation_id=5)
+        self.assertEqual(items, [])
+
+    def test_summarize_ticket_exposes_inline_description_images(self):
+        s = tt.summarize_ticket(self.DESC_TICKET)
+        self.assertEqual(s["inline_image_count"], 2)
+        self.assertEqual(s["inline_images"][0]["attachment_id"], 21119324543)
+
 
 class ChangeSummaryTests(unittest.TestCase):
     def test_enum_ids_map_to_names(self):
