@@ -21,8 +21,10 @@ Python [FastMCP](https://github.com/jlowin/fastmcp). It targets the FreshService
   statuses
 
 **Talk to people**
-- `reply_to_requestor` — public reply to the requester (conversation); accepts
-  `attachments` (local file paths or http(s) URLs) to attach files to the reply
+- `reply_to_requestor` — public reply to the requester (conversation); Cc's the
+  ticket's CC list (see `cc_email_on_ticket`) plus any `cc_emails` argument;
+  accepts `attachments` (local file paths or http(s) URLs) to attach files to
+  the reply
 - `add_private_note` — internal note (private conversation), not visible to
   requester; also accepts `attachments`
 - `cc_email_on_ticket` — CC a manager / extra recipients on the ticket
@@ -328,9 +330,12 @@ Operational details verified against the live Weller Truck Parts tenant:
 - `add_time_entry` requires `time_spent` in `hh:mm` (e.g. `00:15`; `45m` /
   `1h30m` are accepted and normalised) and the authenticated agent id is used
   automatically.
-- `cc_email_on_ticket` / `notify_emails` add to `cc_emails` (there is no
-  dedicated notify endpoint); `reply_cc_emails` is NOT writable via the ticket
-  update.
+- `cc_email_on_ticket` / `notify_emails` add to the ticket's `cc_emails` list
+  (there is no dedicated notify endpoint). `reply_cc_emails` is NOT writable via
+  the ticket update; FreshService Cc's a reply only from recipients carried on
+  the reply itself, so `reply_to_requestor` pulls the ticket's `cc_emails` onto
+  every reply. Adding a CC alone sends no email — a reply must follow for the
+  CC'd person to be notified.
 - Mutating calls return the updated resource, which is summarised for the
   assistant instead of dumping raw JSON.
 - All requests honour `verify_ssl` (on by default; disable only for self-signed

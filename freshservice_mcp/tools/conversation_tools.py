@@ -204,10 +204,18 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     @mcp.tool()
     def reply_to_requestor(ticket_id: TicketId, body: str,
                            to_emails: Optional[List[str]] = None,
+                           cc_emails: Optional[List[str]] = None,
                            attachments: Optional[List[str]] = None) -> dict:
         """Send an outgoing reply to the ticket requester (and any extra
         recipients via to_emails, e.g. to keep someone else in the loop). The
         reply becomes a public, requester-visible conversation entry.
+
+        Recipients: ``To`` is the requester (plus ``to_emails`` if given);
+        ``Cc`` is anyone on the ticket's CC list (set with
+        ``cc_email_on_ticket`` / ``notify_emails``) plus any ``cc_emails``
+        passed here. FreshService only Cc's a reply from recipients carried on
+        the reply itself -- writing the ticket's ``cc_emails`` alone never
+        emails anyone -- so the ticket CC list is pulled onto every reply.
 
         ``attachments`` optionally attaches files to the reply: a list of local
         file paths or http(s) URLs (e.g. "/tmp/report.pdf" or a signed link).
@@ -218,21 +226,37 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         tid = _require_ticket_id(ticket_id)
         if not body or not body.strip():
             raise ValueError("body must not be empty.")
+        # FreshService Cc's a reply only from recipients on the reply payload;
+        # the ticket's cc_emails is NOT applied automatically. Pull the ticket
+        # CC list so cc_email_on_ticket/notify_emails actually reach people.
+        cc: List[str] = list(cc_emails or [])
+        try:
+            ticket = client.get_one(f"/tickets/{tid}", key="ticket") or {}
+            for e in (ticket.get("cc_emails") or []):
+                if e not in cc:
+                    cc.append(e)
+        except Exception:  # noqa: BLE001 - a reply must not fail on the CC read
+            pass
         files, uploaded = _prep_uploads(attachments)
         if files:
             form: Dict[str, Any] = {"body": body}
             if to_emails:
                 form["to_emails[]"] = list(to_emails)
+            if cc:
+                form["cc_emails[]"] = cc
             result = client.post_form_files(f"/tickets/{tid}/reply", form, files)
         else:
             payload: dict = {"body": body}
             if to_emails:
                 payload["to_emails"] = list(to_emails)
+            if cc:
+                payload["cc_emails"] = cc
             result = client.post_json(f"/tickets/{tid}/reply", payload)
         return {
             "ticket_id": tid,
             "sent": True,
             "to_emails": to_emails or [],
+            "cc_emails": cc,
             "attachments": uploaded,
             "conversation_id": (result or {}).get("conversation", {}).get("id")
             or (result or {}).get("note", {}).get("id"),
