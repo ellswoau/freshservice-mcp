@@ -233,6 +233,29 @@ def _missing_closure_fields(ticket: dict, fields: List[dict]) -> List[str]:
     return missing
 
 
+def _split_update_fields(updates: dict) -> dict:
+    """Turn a generic ``updates`` dict into a ticket PUT body.
+
+    Custom fields (``msf_store``, ``resolution``) are NOT top-level ticket
+    attributes: FreshService rejects them on the ticket route with a
+    ``{"field": "msf_store", "code": "invalid_field"}`` 400. Route them under
+    ``custom_fields`` (the same shape ``classify_ticket`` / ``resolve_ticket``
+    send). An explicit ``custom_fields`` mapping in ``updates`` is merged."""
+    body: dict = {}
+    custom: dict = {}
+    existing = updates.get("custom_fields")
+    if isinstance(existing, dict):
+        custom.update(existing)
+    for key, value in updates.items():
+        if key == "custom_fields":
+            continue
+        target = custom if key in _CUSTOM_FIELD_NAMES else body
+        target[key] = value
+    if custom:
+        body["custom_fields"] = custom
+    return body
+
+
 def _require_ticket_id(ticket_id) -> int:
     # Accept bare ids ('47199') or display-form ids ('INC-47199', 'SR-39').
     m = re.search(r"\d+", str(ticket_id).strip())
@@ -459,12 +482,20 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         (e.g. {"subject": ..., "description": ..., "cc_emails": [...],
         "tags": [...], "due_by": ...}). Pass only the fields you want to
         change, or use the dedicated status/priority/categorize/assign tools
-        for those. Returns the updated ticket."""
+        for those. Returns the updated ticket.
+
+        Custom fields (``msf_store`` Store, ``resolution``) are routed under
+        ``custom_fields`` for you -- sent as top-level keys they are rejected
+        with ``invalid_field``. Prefer ``classify_ticket`` when setting Store
+        with validation, and ``resolve_ticket`` for a closure resolve."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
         if not updates or not isinstance(updates, dict):
             raise ValueError("Provide an updates dict with at least one field.")
-        updated = client.put_json(f"/tickets/{tid}", updates)
+        body = _split_update_fields(updates)
+        if not body:
+            raise ValueError("Provide at least one top-level field or custom field.")
+        updated = client.put_json(f"/tickets/{tid}", body)
         return {"updated": True, "ticket": summarize_ticket(updated.get("ticket") or {})}
 
     @mcp.tool()

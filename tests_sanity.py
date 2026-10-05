@@ -133,6 +133,32 @@ class ClassificationBodyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tt._classification_body(None, _config(), _fields(), store=["99-Nowhere"])
 
+
+class UpdateTicketBodyTests(unittest.TestCase):
+    def test_custom_fields_routed_under_custom_fields(self):
+        body = tt._split_update_fields(
+            {"msf_store": ["1-Grand Rapids"], "priority": 1, "urgency": 1,
+             "impact": 1, "department_id": 21000492768})
+        self.assertEqual(body["priority"], 1)
+        self.assertEqual(body["department_id"], 21000492768)
+        self.assertEqual(body["custom_fields"], {"msf_store": ["1-Grand Rapids"]})
+        self.assertNotIn("msf_store", body)
+
+    def test_resolution_is_a_custom_field(self):
+        body = tt._split_update_fields({"resolution": "done", "subject": "s"})
+        self.assertEqual(body["custom_fields"], {"resolution": "done"})
+        self.assertEqual(body["subject"], "s")
+
+    def test_explicit_custom_fields_merge(self):
+        body = tt._split_update_fields(
+            {"custom_fields": {"other": "x"}, "msf_store": ["8-Atlanta"]})
+        self.assertEqual(body["custom_fields"],
+                         {"other": "x", "msf_store": ["8-Atlanta"]})
+
+    def test_plain_fields_pass_through(self):
+        self.assertEqual(tt._split_update_fields({"subject": "s", "tags": ["a"]}),
+                         {"subject": "s", "tags": ["a"]})
+
     def test_invalid_sub_category_raises(self):
         with self.assertRaises(ValueError):
             tt._classification_body(None, _config(), _fields(),
