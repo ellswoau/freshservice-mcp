@@ -25,6 +25,9 @@ from ._common import (
 
 # Guardrails so a single call cannot pull unbounded bytes / images into context.
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# Oversized images are downscaled/recompressed to fit MAX_IMAGE_BYTES rather
+# than skipped (a requester's phone screenshot is routinely >8 MB).
+MAX_IMAGE_DIM = 2600
 MAX_IMAGES_PER_CALL = 8
 # Outbound attachment guardrails (one reply/note cannot ship unbounded bytes).
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -93,6 +96,44 @@ def _probe_dims(raw: bytes) -> tuple:
             return int(im.width), int(im.height)
     except Exception:
         return None, None
+
+
+def _optimize_image(raw: bytes, ctype: str,
+                    max_bytes: int = MAX_IMAGE_BYTES,
+                    max_dim: int = MAX_IMAGE_DIM) -> tuple:
+    """Return ``(bytes, content_type)`` for an image, downscaled/recompressed to
+    fit ``max_bytes`` when needed.
+
+    A requester's phone screenshot can exceed the inline cap (the 47570 ticket
+    attached a 9 MB JPEG), which previously meant the model could not read the
+    screenshot at all and had to ask the requester for the text. Recompressing
+    to a sane max dimension and JPEG quality keeps the text legible while
+    fitting the cap. Returns the original unchanged when it already fits or when
+    Pillow is unavailable.
+    """
+    if len(raw) <= max_bytes:
+        return raw, ctype
+    try:
+        from PIL import Image as PILImage  # type: ignore
+        import io
+    except Exception:
+        return raw, ctype
+    try:
+        with PILImage.open(io.BytesIO(raw)) as im:
+            im = im.convert("RGB") if im.mode not in ("RGB", "L") else im
+            if max(im.size) > max_dim:
+                im.thumbnail((max_dim, max_dim))
+            for quality in (85, 75, 65, 55, 45):
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=quality, optimize=True)
+                if buf.tell() <= max_bytes:
+                    return buf.getvalue(), "image/jpeg"
+            im.thumbnail((1600, 1600))
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=60, optimize=True)
+            return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return raw, ctype
 
 
 def _download(client, tid: int, a: dict) -> tuple:
@@ -404,7 +445,9 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         ticket (small signature logos are skipped via ``min_width`` /
         ``min_height``).
 
-        ``max_images`` caps how many are returned; each image is capped at 8 MB.
+        ``max_images`` caps how many are returned. An image larger than the
+        8 MB inline cap is downscaled/recompressed to fit rather than skipped,
+        so a large requester screenshot is still readable.
         """
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
@@ -441,16 +484,24 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
                     f"attachment {a.get('attachment_id')} is {ctype} "
                     f"({len(raw)} bytes), not an image -- not rendered.")))
                 continue
+            orig_len = len(raw)
+            if orig_len > MAX_IMAGE_BYTES:
+                # A large screenshot is downscaled/recompressed rather than
+                # skipped, so the model can still read the error it shows.
+                raw, ctype = _optimize_image(raw, ctype)
             if len(raw) > MAX_IMAGE_BYTES:
                 out.append(TextContent(type="text", text=(
-                    f"attachment {a.get('attachment_id')} is {len(raw)} bytes "
-                    f"(> {MAX_IMAGE_BYTES}); too large to inline.")))
+                    f"attachment {a.get('attachment_id')} is {orig_len} bytes "
+                    f"and could not be compressed under the {MAX_IMAGE_BYTES}-byte "
+                    f"inline cap (got {len(raw)}).")))
                 continue
             w, h = _probe_dims(raw)
+            shrunk = (f", recompressed from {orig_len} bytes"
+                      if orig_len > MAX_IMAGE_BYTES else "")
             label = (
                 f"Attachment {a.get('attachment_id')} from "
                 f"{a.get('from_email') or 'unknown'} at {a.get('created_at')} "
-                f"({ctype}, {w}x{h}px):"
+                f"({ctype}, {w}x{h}px{shrunk}):"
             )
             out.append(TextContent(type="text", text=label))
             out.append(ImageContent(
