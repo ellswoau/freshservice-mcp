@@ -383,8 +383,9 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     @mcp.tool()
     def view_ticket(ticket_id: TicketId, include_conversations: bool = False) -> dict:
         """View a single ticket by id. Set include_conversations=True to also
-        return the ticket's replies & private notes (inline via the
-        ``conversations`` include, valid on this account). Returns full ticket
+        return the ticket's replies & private notes -- the full history,
+        newest first (fetched from the conversations endpoint, never the
+        truncated inline ``conversations`` include). Returns full ticket
         attributes, requester/responder/group details and timestamps."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
@@ -396,15 +397,23 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         ticket = client.get_one(f"/tickets/{tid}", params={"include": base}, key="ticket")
         result = summarize_ticket(ticket)
         if include_conversations:
-            convs = ticket.get("conversations")
-            # Some accounts return them inline; otherwise fall back to the list
-            # endpoint (read-only, always available).
-            if not isinstance(convs, list):
-                try:
-                    data = client.get_json(f"/tickets/{tid}/conversations")
-                    convs = data.get("conversations") if isinstance(data, dict) else data
-                except Exception:
-                    convs = []
+            # Always read the FULL conversation list from the dedicated
+            # endpoint. The inline ``include=conversations`` FreshService
+            # returns on the ticket is capped at the first page (10,
+            # oldest-first), so on a ticket with more than 10 entries it
+            # silently omits the newest notes/replies and the caller sees a
+            # stale "newest" entry (the ticket-47631 "no new inbound message"
+            # bug). The list endpoint returns them newest-first and paginates
+            # (per_page capped at 100).
+            try:
+                convs = client.get_list(
+                    f"/tickets/{tid}/conversations",
+                    envelope_key="conversations",
+                    per_page=100,
+                    max_pages=20,
+                )
+            except Exception:
+                convs = ticket.get("conversations")
             result["conversations"] = (
                 [summarize_conversation(c) for c in convs] if isinstance(convs, list) else []
             )
