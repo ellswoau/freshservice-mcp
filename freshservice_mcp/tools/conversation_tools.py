@@ -338,8 +338,23 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         newest first, marking each as public or private."""
         client = get_client(config)
         tid = _require_ticket_id(ticket_id)
-        data = client.get_json(f"/tickets/{tid}/conversations")
-        convs = data.get("conversations") if isinstance(data, dict) else data
+        # Always read the FULL conversation list from the dedicated paginated
+        # endpoint. A single unpaginated GET is capped at FreshService's
+        # default page size (10), so on a busy ticket the newest notes/replies
+        # were silently dropped (the same class of bug fixed in view_ticket).
+        # The list endpoint returns them newest-first and paginates
+        # (per_page capped at 100).
+        try:
+            convs = client.get_list(
+                f"/tickets/{tid}/conversations",
+                envelope_key="conversations",
+                per_page=100,
+                max_pages=20,
+            )
+        except Exception:
+            # Fall back to a single raw request rather than failing the listing.
+            data = client.get_json(f"/tickets/{tid}/conversations")
+            convs = data.get("conversations") if isinstance(data, dict) else data
         if not isinstance(convs, list):
             convs = []
         return {
