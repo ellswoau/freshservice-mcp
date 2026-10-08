@@ -112,12 +112,40 @@ def summarize_change(c: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def compact_change(c: Dict[str, Any], desc_chars: int = 150) -> Dict[str, Any]:
+    """The few fields a "what changed" read needs (keeps a week of changes ~3 KB)."""
+    desc = (c.get("description_text") or "").strip().replace("\r", " ").replace("\n", " ")
+    desc = re.sub(r"\s+", " ", desc)
+    if len(desc) > desc_chars:
+        desc = desc[:desc_chars].rstrip() + "..."
+    return {
+        "id": c.get("id"),
+        "subject": (c.get("subject") or "").strip(),
+        "status": _enum_name(CHANGE_STATUSES, c.get("status")),
+        "change_type": _enum_name(CHANGE_TYPES, c.get("change_type")),
+        "risk": _enum_name(CHANGE_RISKS, c.get("risk")),
+        "planned_start_date": c.get("planned_start_date"),
+        "planned_end_date": c.get("planned_end_date"),
+        "updated_at": c.get("updated_at"),
+        "description": desc,
+    }
+
+
+def _matches(c: Dict[str, Any], query: Optional[str]) -> bool:
+    if not query:
+        return True
+    hay = " ".join(str(c.get(k) or "") for k in ("subject", "description_text")).lower()
+    return all(term in hay for term in query.lower().split())
+
+
 def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     @mcp.tool()
     def list_changes(per_page: int = 50, page: int = 1,
                      updated_since: Optional[str] = None,
                      order_by: str = "created_at",
-                     order_type: str = "desc") -> dict:
+                     order_type: str = "desc",
+                     compact: bool = False,
+                     query: Optional[str] = None) -> dict:
         """Return a paginated list of changes from the Change module (most
         recent first by default).
 
@@ -127,7 +155,15 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
         client-side. ``change_type``, ``status``, ``risk``, ``impact`` and
         ``priority`` come back as ids; the ``valid_values`` block maps them to
         names. Set order_by to 'created_at' or 'updated_at'; order_type to 'asc'
-        or 'desc'. Per page is capped at 100."""
+        or 'desc'. Per page is capped at 100.
+
+        For a "what changed recently" read pass ``compact=True`` (id, subject,
+        status, type, risk, planned window, updated_at and the first 150
+        characters of the description -- about 3 KB for a week instead of ~40 KB)
+        and optionally ``query``: space-separated words that must ALL appear in the
+        subject or description (case-insensitive), e.g. ``"south bend"`` or
+        ``"horizon"``. The filter is applied to the fetched page, so pair it with
+        ``updated_since`` and ``per_page=100``."""
         client = get_client(config)
         params: Dict[str, Any] = {"order_by": order_by, "order_type": order_type}
         if updated_since:
@@ -139,11 +175,23 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
             page=page,
             envelope_key="changes",
         )
+        matched = [c for c in changes if _matches(c, query)]
+        if compact:
+            return {
+                "page": page,
+                "fetched": len(changes),
+                "returned": len(matched),
+                "updated_since": updated_since,
+                "query": query,
+                "changes": [compact_change(c) for c in matched],
+            }
         return {
             "page": page,
-            "returned": len(changes),
+            "fetched": len(changes),
+            "returned": len(matched),
             "updated_since": updated_since,
-            "changes": [summarize_change(c) for c in changes],
+            "query": query,
+            "changes": [summarize_change(c) for c in matched],
             "valid_values": {
                 "status": CHANGE_STATUSES,
                 "change_type": CHANGE_TYPES,

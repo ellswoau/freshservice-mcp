@@ -386,6 +386,26 @@ class ChangeSummaryTests(unittest.TestCase):
         self.assertEqual(s["asset_count"], 2)
         self.assertEqual(s["impacted_services"], ["Email"])
 
+    def test_compact_change(self):
+        c = {"id": 296, "subject": " Standard Change: Canceling Nitel for south bend ",
+             "status": 2, "change_type": 1, "risk": 1, "updated_at": "2026-10-07T13:50:58Z",
+             "description_text": "As part of\r\n transitioning to MetTel " + "x" * 300,
+             "maintenance_window": {}, "attachments": []}
+        s = cht.compact_change(c)
+        self.assertEqual(s["status"], "Planning")
+        self.assertEqual(s["subject"], "Standard Change: Canceling Nitel for south bend")
+        self.assertTrue(s["description"].startswith("As part of transitioning to MetTel"))
+        self.assertTrue(s["description"].endswith("..."))
+        self.assertLessEqual(len(s["description"]), 153)
+        self.assertNotIn("maintenance_window", s)
+
+    def test_change_query_match(self):
+        c = {"subject": "Add New IPs for South Bend Store", "description_text": "Panorama"}
+        self.assertTrue(cht._matches(c, None))
+        self.assertTrue(cht._matches(c, "south bend"))
+        self.assertTrue(cht._matches(c, "PANORAMA bend"))
+        self.assertFalse(cht._matches(c, "seattle"))
+
     def test_require_change_id_accepts_bare_and_junk(self):
         self.assertEqual(cht._require_change_id("276"), 276)
         self.assertEqual(cht._require_change_id(276), 276)
