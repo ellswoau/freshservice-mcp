@@ -413,5 +413,91 @@ class ChangeSummaryTests(unittest.TestCase):
             cht._require_change_id("abc")
 
 
+class EmlAttachmentTests(unittest.TestCase):
+    """read_attachment_text: sniff + parse a sanitized .eml ticket attachment.
+
+    Mirrors the real ticket-47779 failure (a report copy attached as
+    ``application/octet-stream`` whose From/Subject/List-Id lived inside)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        path = os.path.join(os.path.dirname(__file__), "tests", "fixtures",
+                            "attachment.eml")
+        with open(path, "rb") as fh:
+            cls.raw = fh.read()
+
+    def test_sniff_by_octet_stream_plus_eml_filename(self):
+        # The real case: content_type was application/octet-stream.
+        self.assertTrue(ct._looks_like_message(
+            self.raw, "application/octet-stream", "attachment.eml"))
+
+    def test_sniff_by_content_type(self):
+        self.assertTrue(ct._looks_like_message(self.raw, "message/rfc822", None))
+
+    def test_sniff_by_headers_alone(self):
+        # No type hint, no filename hint -- headers must still identify it.
+        self.assertTrue(ct._looks_like_message(self.raw, None, None))
+
+    def test_png_is_not_a_message(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+        self.assertFalse(ct._looks_like_message(png, "application/octet-stream", "x.png"))
+
+    def test_headers_recovered(self):
+        parsed = ct._parse_rfc822(self.raw)
+        h = parsed["headers"]
+        self.assertIn("SSRS Report Subscription", h["From"])
+        self.assertIn("reports@ssrs.example.com", h["From"])
+        self.assertEqual(h["Subject"], "[Report] Daily Sales Summary - Store 8-Atlanta")
+        self.assertIn("DL-Reports@example.com", h["To"])
+        self.assertEqual(h["Return-Path"], "<reports@ssrs.example.com>")
+        self.assertIn("List-Id", h)  # List-* headers are surfaced too
+
+    def test_body_text_prefers_plain_over_html(self):
+        parsed = ct._parse_rfc822(self.raw)
+        self.assertTrue(parsed["body_text"].strip())
+        self.assertIn("Daily Sales Summary", parsed["body_text"])
+        # The HTML alternative exists, so the plain part must win -- no tag junk.
+        self.assertNotIn("<html", parsed["body_text"])
+        self.assertNotIn("alert(", parsed["body_text"])  # script never emitted
+
+    def test_parts_manifest_lists_report_attachment(self):
+        parsed = ct._parse_rfc822(self.raw)
+        parts = parsed["parts"]
+        self.assertTrue(parts)
+        csv = [p for p in parts if p["content_type"] == "text/csv"]
+        self.assertEqual(len(csv), 1)
+        self.assertEqual(csv[0]["filename"], "daily-sales-8-atlanta.csv")
+        self.assertEqual(csv[0]["disposition"], "attachment")
+        self.assertGreater(csv[0]["size"] or 0, 0)
+        # index + content_type present on every manifest row
+        for p in parts:
+            self.assertIn("index", p)
+            self.assertIn("content_type", p)
+
+    def test_html_fallback_when_no_plain(self):
+        html_only = (b"From: a@b.c\r\n"
+                     b"Subject: hi\r\n"
+                     b"Content-Type: text/html; charset=utf-8\r\n\r\n"
+                     b"<html><body><script>x=1</script>"
+                     b"<p>Hello&nbsp;there</p></body></html>")
+        parsed = ct._parse_rfc822(html_only)
+        self.assertIn("Hello", parsed["body_text"])
+        self.assertNotIn("script", parsed["body_text"])
+        self.assertNotIn("<p>", parsed["body_text"])
+
+    def test_max_chars_truncates(self):
+        parsed = ct._parse_rfc822(self.raw, max_chars=20)
+        self.assertLessEqual(len(parsed["body_text"]), 20)
+        self.assertTrue(parsed["truncated"])
+
+    def test_nested_images_enumerated_bounded(self):
+        from email import policy as _policy
+        from email.parser import BytesParser as _BP
+        msg = _BP(policy=_policy.default).parsebytes(self.raw)
+        # The fixture has no image parts; the generator must yield nothing.
+        self.assertEqual(list(ct._nested_images(msg, 8)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

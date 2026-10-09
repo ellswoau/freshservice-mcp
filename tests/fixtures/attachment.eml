@@ -1,0 +1,54 @@
+Delivered-To: helpdesk@example.com
+Return-Path: <reports@ssrs.example.com>
+Received: from mail.example.com (mail.example.com [10.10.10.10])
+	by mx.example.com with ESMTP id abc123
+	for <helpdesk@example.com>; Wed, 8 Oct 2026 06:00:01 -0400
+From: "SSRS Report Subscription" <reports@ssrs.example.com>
+Sender: <reports@ssrs.example.com>
+To: "Distribution List" <DL-Reports@example.com>
+Cc: "Ops" <ops@example.com>
+Reply-To: <donotreply@ssrs.example.com>
+List-Id: Report Subscriptions <reports.ssrs.example.com>
+List-Unsubscribe: <mailto:unsubscribe@ssrs.example.com>
+Subject: [Report] Daily Sales Summary - Store 8-Atlanta
+Date: Wed, 8 Oct 2026 06:00:00 -0400
+Message-ID: <20261008100000.1234@ssrs.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="BOUNDARY-1"
+
+--BOUNDARY-1
+Content-Type: multipart/alternative; boundary="BOUNDARY-2"
+
+--BOUNDARY-2
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+This is an automated report subscription message.
+
+Report: Daily Sales Summary
+Store: 8-Atlanta
+Generated: 2026-10-08 06:00
+
+The attached report copy is included for your records.
+
+--BOUNDARY-2
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<html><head><style>.x{color:red}</style></head><body>
+<script>alert('nope');</script>
+<p>This is an automated report subscription message.</p>
+<img src="https://tracking.example.com/pixel.gif">
+<table><tr><td>Store</td><td>8-Atlanta</td></tr></table>
+</body></html>
+
+--BOUNDARY-2--
+
+--BOUNDARY-1
+Content-Type: text/csv; name="daily-sales-8-atlanta.csv"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="daily-sales-8-atlanta.csv"
+
+c3RvcmUsZGF0ZSx0b3RhbAo4LUF0bGFudGEsMjAyNi0xMC0wOCwxMjM0NTY3OAo=
+
+--BOUNDARY-1--
