@@ -43,6 +43,11 @@ ATTACHMENT_FIELD = "attachments[]"
 # Default size gate: email-signature logos are ~190x53, real screenshots are
 # larger. Used only by the bulk image tool; an explicit id bypasses it.
 DEFAULT_MIN_WIDTH = 250
+# Default body cap for ``read_attachment_text``. Triage normally needs the
+# headers plus a short preview, not the whole message body (a 250 KB report
+# e-mail is mostly HTML). Headers and the nested-part manifest are always
+# returned in full; raise ``max_chars`` explicitly to read a full body.
+DEFAULT_ATTACHMENT_MAX_CHARS = 4000
 DEFAULT_MIN_HEIGHT = 120
 
 # --- reading a ticket attachment that is an e-mail message (.eml / RFC-822) ---
@@ -747,7 +752,7 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
     @mcp.tool()
     def read_attachment_text(ticket_id: TicketId,
                              attachment_id: Optional[int] = None,
-                             max_chars: int = 40000,
+                             max_chars: int = DEFAULT_ATTACHMENT_MAX_CHARS,
                              include_nested: bool = True,
                              include_images: bool = False):
         """Read a ticket attachment that is an e-mail message (RFC-822 / ``.eml``)
@@ -767,7 +772,10 @@ def register(mcp: "FastMCP", config: "FreshServiceConfig") -> None:
 
         - ``attachment_id``: id from ``list_ticket_attachments``. When omitted,
           the first message-like attachment on the ticket is used.
-        - ``max_chars``: cap on the returned body text.
+        - ``max_chars``: cap on the returned body text. **Call it with the
+          default for routine triage** (headers + a short preview); pass a
+          larger value only when the body itself must be read. Headers and the
+          nested-part manifest are always returned in full regardless.
         - ``include_nested``: include the nested MIME-part manifest (and recurse
           into nested messages).
         - ``include_images``: also inline images *nested inside the message*,
